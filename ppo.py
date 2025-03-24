@@ -5,7 +5,7 @@ import torch.optim as optim
 import numpy as np
 from vizdoom import gymnasium_wrapper  
 from torch.utils.data import TensorDataset, DataLoader
-from models.vanilla_vit import SimpleViT
+from models.temporal_vit import SimpleViT
 
 ########################################
 # Custom Policy Network (Actor-Critic)

@@ -5,7 +5,7 @@ import torch.optim as optim
 import numpy as np
 from vizdoom import gymnasium_wrapper  
 from torch.utils.data import TensorDataset, DataLoader
-from models.vanilla_vit import SimpleViT
+from models.temporal_vit import SimpleViT
 ########################################
 # Policy Network for REINFORCE (Actor-only)
 ########################################
@@ -171,7 +171,7 @@ class REINFORCEAgent:
 
 if __name__ == "__main__":
     # Define the environment.
-    env_id = "VizdoomCorridor-v0"  # Change to your desired environment. For VizDoom, use the appropriate id.
+    env_id = "VizdoomBasic-v0"  # Change to your desired environment. For VizDoom, use the appropriate id.
     env = gym.make(env_id, render_mode="human")
 
     # Get observation and action space dimensions.
