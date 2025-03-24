@@ -48,38 +48,61 @@ class PolicyNetwork(nn.Module):
 ########################################
 
 class REINFORCEAgent:
-    def __init__(self, env, policy, lr=1e-3, gamma=0.99):
+    def __init__(self, env, policy, lr=1e-3, gamma=0.99, temporal_window_size=10):
         """
         Initialize the REINFORCE agent with the given environment and policy.
+        
+        Args:
+            env: Gymnasium environment
+            policy: Policy network (e.g., SimpleViT)
+            lr: Learning rate
+            gamma: Discount factor
+            temporal_window_size: Number of recent frames to consider for temporal processing
         """
         self.env = env
         self.policy = policy
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         self.gamma = gamma
+        self.temporal_window_size = temporal_window_size
 
     def collect_trajectory(self, max_steps=1000):
         """
-        Run one episode and collect observations, actions, log probabilities, and rewards.
+        Run one episode and collect actions, log probabilities, and rewards.
+        Uses a rolling window for temporal processing.
+        
+        Note: We don't need to store all observations for REINFORCE, just the
+        actions, log_probs, and rewards for credit assignment.
         """
         obs, info = self.env.reset()
-        observations, actions, log_probs, rewards = [], [], [], []
+        actions, log_probs, rewards = [], [], []
+        
+        # Initialize observation window with copies of the first frame
+        # This creates the initial context for temporal processing
+        first_image = obs['screen']
+        first_tensor = torch.FloatTensor(first_image).permute(2, 0, 1).unsqueeze(0) / 255.0
+        obs_window = [first_tensor.clone() for _ in range(self.temporal_window_size)]
 
         for t in range(max_steps):
             # Extract the image from the observation dictionary
             image = obs['screen']
             
-            # Convert image to tensor and feed to policy
+            # Convert image to tensor and normalize
             # Change shape from (H, W, C) to (C, H, W) which is PyTorch's expected format
-            image_tensor = torch.FloatTensor(image).permute(2, 0, 1).unsqueeze(0)  # Add batch dimension
+            image_tensor = torch.FloatTensor(image).permute(2, 0, 1).unsqueeze(0) / 255.0
             
-            # Normalize the image (optional but helpful for ViT)
-            image_tensor = image_tensor / 255.0
+            # Update the observation window (remove oldest, add newest)
+            obs_window.pop(0)
+            obs_window.append(image_tensor)
             
-            action, log_prob = self.policy.act(image_tensor)
+            # Create a temporal batch from the window
+            # Stack along first dimension to create shape [temporal_window_size, C, H, W]
+            temporal_batch = torch.cat(obs_window, dim=0)
+            
+            # Pass the temporal batch to the policy
+            action, log_prob = self.policy.act(temporal_batch)
             
             next_obs, reward, terminated, truncated, info = self.env.step(action)
 
-            observations.append(image)  # Store just the image for replay
             actions.append(action)
             log_probs.append(log_prob)
             rewards.append(reward)
@@ -89,7 +112,6 @@ class REINFORCEAgent:
                 break
 
         return {
-            'observations': observations,
             'actions': actions,
             'log_probs': log_probs,
             'rewards': rewards
@@ -112,6 +134,10 @@ class REINFORCEAgent:
     def update_policy(self, trajectory):
         """
         Update the policy network using the REINFORCE update rule.
+        
+        The REINFORCE algorithm only needs the log_probs and rewards for credit 
+        assignment - we don't need to use the observations again since the
+        policy gradient is calculated using log_probs * returns.
         """
         log_probs = trajectory['log_probs']
         rewards = trajectory['rewards']
@@ -187,7 +213,13 @@ if __name__ == "__main__":
     )
 
     # Instantiate the REINFORCE agent with the environment and policy.
-    agent = REINFORCEAgent(env, policy, lr=1e-4, gamma=0.95)
+    agent = REINFORCEAgent(
+        env=env, 
+        policy=policy, 
+        lr=1e-4, 
+        gamma=0.95,
+        temporal_window_size=5  # Process 4 recent frames for temporal context
+    )
 
     # Train the agent.
     agent.train(num_episodes=500, max_steps=1000)

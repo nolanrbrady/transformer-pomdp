@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 class PatchEmbedding(nn.Module):
     """
@@ -249,16 +250,29 @@ class SimpleViT(nn.Module):
             pad_if_needed=pad_if_needed,
         )
         
-        # Only one transformer block, as requested
-        self.block = Block(
+        # Spatial transformer block for individual frames
+        self.spatial_block = Block(
             embed_dim=embed_dim,
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
             dropout=dropout,
         )
         
+        # Temporal transformer block for sequence of frames
+        self.temporal_block = Block(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+        )
+        
+        # Temporal position embeddings
+        self.temporal_pos_embed = nn.Parameter(torch.zeros(1, 100, embed_dim))  # Support up to 100 frames
+        nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
+        
         # Layer Norm
-        self.norm = nn.LayerNorm(embed_dim)
+        self.spatial_norm = nn.LayerNorm(embed_dim)
+        self.temporal_norm = nn.LayerNorm(embed_dim)
         
         # Classification head
         self.head = nn.Linear(embed_dim, num_classes)
@@ -327,101 +341,118 @@ class SimpleViT(nn.Module):
             # Copy back to the patch_embed's position embeddings
             self.patch_embed.pos_embed.data.copy_(pos_embed_2d)
     
+    def process_single_image(self, img):
+        """
+        Process a single image through patch embedding and spatial transformer.
+        
+        Args:
+            img: Single image of shape (C, H, W) or (1, C, H, W)
+            
+        Returns:
+            Embedded representation of shape (1, n_patches+1, embed_dim)
+        """
+        # Handle singleton dimension if present
+        if len(img.shape) == 4 and img.shape[0] == 1:
+            img = img.squeeze(0)
+        
+        # Patch embedding
+        x = self.patch_embed(img)  # (1, n_patches+1, embed_dim)
+        
+        # Apply spatial transformer block
+        x = self.spatial_block(x)  # (1, n_patches+1, embed_dim)
+        
+        # Apply layer norm
+        x = self.spatial_norm(x)  # (1, n_patches+1, embed_dim)
+        
+        return x
+    
     def forward(self, x):
         """
-        Forward pass for the SimpleViT model.
-        For single-image processing:
-        x: (C, H, W) - Single image without batch dimension
+        Process a sequence of images through spatial and temporal transformers.
         
-        Returns: (num_classes) - Class logits
+        Args:
+            x: Temporal sequence of frames with shape (T, C, H, W) where:
+               - T is the temporal window size (e.g., 4 recent frames)
+               - C is the number of channels
+               - H, W are the height and width of each frame
+            
+        Returns:
+            Class logits of shape (num_classes)
+            
+        Process:
+            1. Each frame is processed individually through spatial embedding and transformer
+            2. CLS tokens from all frames are collected to form a temporal sequence
+            3. Temporal sequence is processed through a temporal transformer
+            4. Final prediction is made from the last temporal token
         """
-        print("Input shape in SimpleViT forward:", x.shape)
         
-        # Handle single image vs batch
-        if len(x.shape) == 3:  # Single image: (C, H, W)
-            single_image = True
-            # Process single image
-            x = self.patch_embed(x)  # (1, n_patches+1, embed_dim)
-            
-            # Apply transformer block
-            x = self.block(x)  # (1, n_patches+1, embed_dim)
-            
-            # Apply layer norm
-            x = self.norm(x)  # (1, n_patches+1, embed_dim)
-            
-            # Classification from CLS token
-            x = self.head(x[:, 0])  # (1, num_classes)
-            
-            # Remove batch dimension for consistency
-            x = x.squeeze(0)  # (num_classes)
-            
-        else:  # Batch of images: (B, C, H, W)
-            single_image = False
-            batch_size = x.shape[0]
-            
-            # Process batch
-            embeddings = []
-            
-            for i in range(batch_size):
-                # Extract single image
-                img = x[i]  # (C, H, W)
-                
-                # Process through patch embedding
-                embed = self.patch_embed(img)  # (1, n_patches+1, embed_dim)
-                embeddings.append(embed)
-            
-            # Stack along batch dimension
-            x = torch.cat(embeddings, dim=0)  # (B, n_patches+1, embed_dim)
-            
-            # Apply transformer block
-            x = self.block(x)  # (B, n_patches+1, embed_dim)
-            
-            # Apply layer norm
-            x = self.norm(x)  # (B, n_patches+1, embed_dim)
-            
-            # Classification from CLS token
-            x = self.head(x[:, 0])  # (B, num_classes)
+        # Process each image through spatial embedding and transformer
+        T = x.shape[0]  # Number of frames in sequence
         
-        print("Output shape:", x.shape)
+        # Process images one by one (batch-size agnostic)
+        spatial_embeddings = []
+        for t in range(T):
+            img = x[t]  # (C, H, W)
+            embedded_img = self.process_single_image(img)  # (1, n_patches+1, embed_dim)
+            
+            # Extract CLS token representation
+            cls_token = embedded_img[:, 0:1, :]  # (1, 1, embed_dim)
+            spatial_embeddings.append(cls_token)
+        
+        # Stack all CLS token embeddings along temporal dimension
+        temporal_sequence = torch.cat(spatial_embeddings, dim=1)  # (1, T, embed_dim)
+        
+        # Add temporal position embeddings
+        temporal_pos_embed = self.temporal_pos_embed[:, :T, :]
+        temporal_sequence = temporal_sequence + temporal_pos_embed
+        
+        # Apply temporal transformer block
+        temporal_sequence = self.temporal_block(temporal_sequence)  # (1, T, embed_dim)
+        print("temporal_sequence", temporal_sequence.shape)
+        
+        # Apply layer norm
+        temporal_sequence = self.temporal_norm(temporal_sequence)  # (1, T, embed_dim)
+        
+        # Use the last token for classification
+        x = self.head(temporal_sequence[:, -1])  # (1, num_classes)
+        
+        # Remove batch dimension
+        x = x.squeeze(0)  # (num_classes)
+        
         return x
     
     def act(self, obs):
         """
         Given an observation, sample an action.
-        Expects input of shape (B, C, H, W) where B is typically 1 for RL.
+        Expects input of shape (T, C, H, W) where T is the number of frames.
         
         Returns the action and the log probability of that action.
         """ 
-        print("obs.shape in act", obs.shape)
-        
-        # If batch dimension is 1, we can remove it for processing a single image
-        if obs.shape[0] == 1:
-            # Remove batch dimension: (1, C, H, W) -> (C, H, W)
-            single_image = obs.squeeze(0)
+        # Make sure input is a tensor
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.tensor(np.array(obs))
             
-            # Get logits from forward pass
-            logits = self.forward(single_image)  # (num_classes)
-            
-            # Add batch dimension for softmax
-            logits = logits.unsqueeze(0)  # (1, num_classes)
-        else:
-            # Process entire batch
-            logits = self.forward(obs)  # (B, num_classes)
+        # Remove any extra dimensions if needed
+        if len(obs.shape) > 4:  # If shape is (B, T, C, H, W)
+            obs = obs.squeeze(0)  # Remove batch dimension if present
+    
+        # Forward pass
+        logits = self.forward(obs)  # (num_classes)
         
         # Compute action probabilities
-        probs = torch.softmax(logits, dim=-1)  # (B, num_classes)
+        probs = torch.softmax(logits, dim=-1)  # (num_classes)
         
         # Create categorical distribution
         dist = torch.distributions.Categorical(probs)
         
         # Sample action
-        action = dist.sample()  # (B,)
+        action = dist.sample()  # scalar
         
         # Get log probability of the action
-        log_prob = dist.log_prob(action)  # (B,)
+        log_prob = dist.log_prob(action)  # scalar
         
-        # Return first action and log_prob if batch was given
-        return action.item(), log_prob[0] if log_prob.shape[0] > 1 else log_prob
+        # Return action as int and log_prob as tensor (for backpropagation)
+        return action.item(), log_prob
 
 # Usage example (for reference only)
 if __name__ == "__main__":
