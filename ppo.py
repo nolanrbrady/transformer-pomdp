@@ -208,9 +208,8 @@ if __name__ == "__main__":
         patch_size=width,
         in_channels=channels,
         num_classes=act_space,
-        embed_dim=768,
-        context_length=128,  # Context window of 128 as requested
-        num_heads=12,
+        embed_dim=128,
+        num_heads=4,
         dropout=0.1,
     ) 
     # Instantiate PPOAgent with the environment and policy.
