@@ -454,7 +454,16 @@ class PPOAgent:
                 mb_returns = torch.stack([returns[i] for i in mb_indices])
                 
                 # Forward pass through policy network to get new action distributions
-                action_logits = self.policy(mb_observations)
+                if self.value_head is None:
+                    # For TinyViTActorCriticPolicy, which returns logits from forward
+                    action_logits = self.policy(mb_observations)
+                    # Get values from the policy's get_value method
+                    values = self.policy.get_value(mb_observations)
+                else:
+                    # For separate policy and value networks
+                    action_logits = self.policy(mb_observations)
+                    values = self.value_head(mb_observations).squeeze()
+                
                 action_probs = F.softmax(action_logits, dim=-1)
                 dist = torch.distributions.Categorical(action_probs)
                 
@@ -463,9 +472,6 @@ class PPOAgent:
                 
                 # Calculate entropy for exploration regularization
                 entropy = dist.entropy().mean()
-                
-                # Forward pass through value network
-                values = self.value_head(mb_observations).squeeze()
                 
                 # Calculate the ratio of new and old policies
                 # r_t = π_new(a_t|s_t) / π_old(a_t|s_t)
@@ -489,7 +495,7 @@ class PPOAgent:
                 loss.backward()
                 # Optional: clip gradients for stability
                 torch.nn.utils.clip_grad_norm_(
-                    list(self.policy.parameters()) + list(self.value_head.parameters()), 
+                    self.policy.parameters(), 
                     max_norm=0.5
                 )
                 self.optimizer.step()
@@ -644,8 +650,7 @@ def train_vizdoom_basic():
         original_get_value = agent.get_value
         def new_get_value(self, state):
             with torch.no_grad():
-                _, value = self.policy.forward(state)
-                return value.item()
+                return self.policy.get_value(state).item()
         agent.get_value = types.MethodType(new_get_value, agent)
         
         rewards = agent.train(num_episodes=1000, max_steps=1000)

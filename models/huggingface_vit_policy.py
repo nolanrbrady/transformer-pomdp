@@ -162,23 +162,36 @@ class TinyViTActorCriticPolicy(TinyViTPolicy):
                 nn.init.orthogonal_(m.weight, gain=0.01)
                 nn.init.zeros_(m.bias)
     
-    def forward(self, x):
+    def _get_features(self, x):
         """
-        Forward pass through both the actor (policy) and critic (value) networks.
-        x: Tensor of shape (C, H, W) or (B, C, H, W)
-        Returns: 
-            logits: action logits of shape (B, num_classes)
-            values: state value estimates of shape (B, 1)
+        Helper method to get features (CLS token) from the ViT model.
+        Used by both forward and get_value methods.
         """
         inputs = self.preprocess_image(x)
         outputs = self.vit_model(**inputs, output_hidden_states=True)
-        logits = outputs.logits
-        
         # Get the [CLS] token embedding for the value head
         hidden_states = outputs.hidden_states[-1][:, 0]  # Use CLS token from last layer
-        values = self.value_head(hidden_states)
-        
-        return logits, values.squeeze(-1)
+        return outputs.logits, hidden_states
+    
+    def forward(self, x):
+        """
+        Forward pass for logits only, compatible with the original BasicViT.
+        x: Tensor of shape (C, H, W) or (B, C, H, W)
+        Returns: logits of shape (B, num_classes)
+        """
+        # Just return logits for compatibility with PPO agent
+        logits, _ = self._get_features(x)
+        return logits
+    
+    def get_value(self, x):
+        """
+        Get state value estimates.
+        x: Tensor of shape (C, H, W) or (B, C, H, W)
+        Returns: values of shape (B, 1)
+        """
+        _, features = self._get_features(x)
+        values = self.value_head(features)
+        return values.squeeze(-1)
     
     def act(self, x, training=False):
         """
@@ -189,7 +202,8 @@ class TinyViTActorCriticPolicy(TinyViTPolicy):
         """
         if not training:
             with torch.no_grad():
-                logits, value = self.forward(x)
+                logits, features = self._get_features(x)
+                value = self.value_head(features).squeeze(-1)
                 probs = F.softmax(logits, dim=-1)
                 dist = torch.distributions.Categorical(probs)
                 action = dist.sample()
@@ -197,7 +211,8 @@ class TinyViTActorCriticPolicy(TinyViTPolicy):
             return action.item(), log_prob, value
         else:
             # During training, we need to keep gradients
-            logits, value = self.forward(x)
+            logits, features = self._get_features(x)
+            value = self.value_head(features).squeeze(-1)
             probs = F.softmax(logits, dim=-1)
             dist = torch.distributions.Categorical(probs)
             action = dist.sample()
@@ -211,7 +226,8 @@ class TinyViTActorCriticPolicy(TinyViTPolicy):
         x: Tensor of shape (B, C, H, W)
         actions: Tensor of shape (B,) containing action indices
         """
-        logits, values = self.forward(x)
+        logits, features = self._get_features(x)
+        values = self.value_head(features).squeeze(-1)
         probs = F.softmax(logits, dim=-1)
         dist = torch.distributions.Categorical(probs)
         
@@ -256,10 +272,14 @@ if __name__ == "__main__":
         resize_inputs=True
     )
     
-    # Test forward
+    # Test forward (now only returns logits)
     with torch.no_grad():
-        logits, value = ac_policy(x)
-        print(f"Logits shape: {logits.shape}, Value: {value.item()}")
+        logits = ac_policy(x)
+        print(f"Logits shape: {logits.shape}")
+        
+        # Test get_value
+        value = ac_policy.get_value(x)
+        print(f"Value: {value.item()}")
     
     # Test act
     action, log_prob, value = ac_policy.act(x)
