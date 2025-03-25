@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import time
-
+from actor_critic import ActorCriticVit
 from vizdoom import gymnasium_wrapper
 from models.temporal_vit import TemporalViT
 
@@ -81,13 +81,22 @@ class TemporalREINFORCEAgent:
         return loss.item()
     
     def train(self, num_episodes=500, max_steps=1000):
+        total_rewards = []
+        total_losses = []
         for episode in range(num_episodes):
             trajectory = self.collect_trajectory(max_steps)
             loss = self.update_policy(trajectory)
             total_reward = sum(trajectory['rewards'])
             print(f"Episode {episode+1}: Total Reward = {total_reward:.2f}, Loss = {loss:.4f}")
+            total_rewards.append(total_reward)
+            total_losses.append(loss)
 
-
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('temporal_reinforce_total_rewards.npy', total_rewards_array)
+        np.save('temporal_reinforce_total_losses.npy', total_losses_array)
+        
 ###############################
 # Temporal Actor-Critic Agent
 ###############################
@@ -158,12 +167,21 @@ class TemporalActorCriticAgent:
         return loss.item()
     
     def train(self, num_episodes=500, max_steps=1000):
+        total_rewards = []
+        total_losses = []
         for episode in range(num_episodes):
             trajectory = self.collect_trajectory(max_steps)
             loss = self.update_policy(trajectory)
             total_reward = sum(trajectory['rewards'])
             print(f"Episode {episode+1}: Total Reward = {total_reward:.2f}, Loss = {loss:.4f}")
+            total_rewards.append(total_reward)
+            total_losses.append(loss)
 
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('temporal_ac_total_rewards.npy', total_rewards_array)
+        np.save('temporal_ac_total_losses.npy', total_losses_array)
 
 ###############################
 # Temporal PPO Agent
@@ -302,13 +320,21 @@ class TemporalPPOAgent:
         return {'policy_loss': policy_loss.item(), 'value_loss': value_loss.item(), 'entropy': entropy.mean().item()}
     
     def train(self, total_iterations=50, steps_per_iteration=2048):
+        total_rewards = []
+        total_losses = []
         for itr in range(total_iterations):
             trajectories = self.collect_trajectories(steps_per_iteration)
             loss_info = self.update_policy(trajectories)
             mean_reward = np.mean(trajectories['rewards'])
             print(f"Iteration {itr+1}: Mean Reward = {mean_reward:.2f}, Policy Loss = {loss_info['policy_loss']:.4f}, Value Loss = {loss_info['value_loss']:.4f}, Entropy = {loss_info['entropy']:.4f}")
+            total_rewards.append(mean_reward)
+            total_losses.append(loss_info['policy_loss'] + loss_info['value_loss'] + loss_info['entropy'])
 
-
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('temporal_ppo_total_rewards.npy', total_rewards_array)
+        np.save('temporal_ppo_total_losses.npy', total_losses_array)
 ###############################
 # Main function to select algorithm and train
 ###############################
@@ -344,7 +370,6 @@ def main():
         agent = TemporalREINFORCEAgent(env, policy, lr=1e-4, gamma=0.99, temporal_window_size=5)
         agent.train(num_episodes=2000, max_steps=1500)
     elif algorithm in ["ac", "ppo"]:
-        from actor_critic import ActorCriticVit
         policy = ActorCriticVit(
             img_size=(img_height, img_width),
             patch_size=patch_size,
