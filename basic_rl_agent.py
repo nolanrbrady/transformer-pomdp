@@ -6,12 +6,13 @@ import torch.nn.functional as F
 import numpy as np
 from collections import deque
 from vizdoom import gymnasium_wrapper
-
+import types
 from models.basic_vit import BasicViT
+from models.huggingface_vit_policy import TinyViTPolicy, TinyViTActorCriticPolicy
 
 class REINFORCEAgent:
     """
-    REINFORCE agent using a BasicViT as the policy network.
+    REINFORCE agent using a ViT as the policy network.
     """
     def __init__(self, env, policy, lr=1e-4, gamma=0.99):
         self.env = env
@@ -36,8 +37,8 @@ class REINFORCEAgent:
             # Convert screen to tensor and normalize
             screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0  # (C, H, W)
             
-            # Get action from policy
-            action, log_prob = self.policy.act(screen_tensor)
+            # Get action from policy - using training=True to maintain gradients
+            action, log_prob = self.policy.act(screen_tensor, training=True)
             
             # Take action in environment
             next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -93,6 +94,8 @@ class REINFORCEAgent:
     def train(self, num_episodes=500, max_steps=1000):
         """Train the agent for a specified number of episodes."""
         episode_rewards = []
+        total_rewards = []
+        total_losses = []
         
         for episode in range(num_episodes):
             # Collect trajectory
@@ -107,11 +110,20 @@ class REINFORCEAgent:
             
             # Print progress
             print(f"Episode {episode+1}: Reward = {total_reward:.2f}, Loss = {loss:.4f}")
+
+            total_rewards.append(total_reward)
+            total_losses.append(loss)
             
             # Early stopping if environment is solved
             if len(episode_rewards) >= 100 and np.mean(episode_rewards[-100:]) >= 195:
                 print(f"Environment solved in {episode+1} episodes!")
                 break
+        
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('basic_reinforce_total_rewards.npy', total_rewards_array)
+        np.save('basic_reinforce_total_losses.npy', total_losses_array)
         
         return episode_rewards
 
@@ -123,7 +135,15 @@ class ActorCriticAgent:
         self.env = env
         self.policy = policy  # Actor (policy) network
         self.value_head = value_head  # Critic (value) network
-        self.optimizer = optim.Adam(list(policy.parameters()) + list(value_head.parameters()), lr=lr)
+        
+        # Initialize optimizer based on available networks
+        if value_head is None:
+            # When using a combined actor-critic policy (like HuggingFaceActorCriticPolicy)
+            self.optimizer = optim.Adam(policy.parameters(), lr=lr)
+        else:
+            # When using separate policy and value_head networks
+            self.optimizer = optim.Adam(list(policy.parameters()) + list(value_head.parameters()), lr=lr)
+            
         self.gamma = gamma
     
     def get_value(self, state):
@@ -149,11 +169,14 @@ class ActorCriticAgent:
             # Convert screen to tensor and normalize
             screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0
             
-            # Get action from policy
-            action, log_prob = self.policy.act(screen_tensor)
-            
-            # Get value estimate
-            value = self.value_head(screen_tensor.unsqueeze(0))
+            # Get action from policy and value estimate
+            if self.value_head is None:
+                # Use the combined actor-critic policy
+                action, log_prob, value = self.policy.act(screen_tensor, training=True)
+            else:
+                # Use separate policy and value networks
+                action, log_prob = self.policy.act(screen_tensor, training=True)
+                value = self.value_head(screen_tensor.unsqueeze(0))
             
             # Take action in environment
             next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -233,6 +256,9 @@ class ActorCriticAgent:
         """Train the agent for a specified number of episodes."""
         episode_rewards = []
         
+        total_rewards = []
+        total_losses = []
+        
         for episode in range(num_episodes):
             # Collect trajectory
             trajectory = self.collect_trajectory(max_steps)
@@ -246,7 +272,16 @@ class ActorCriticAgent:
             
             # Print progress
             print(f"Episode {episode+1}: Reward = {total_reward:.2f}, Loss = {loss:.4f}")
-        
+            
+            total_rewards.append(total_reward)
+            total_losses.append(loss)
+
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('basic_ac_total_rewards.npy', total_rewards_array)
+        np.save('basic_ac_total_losses.npy', total_losses_array)
+
         return episode_rewards
 
 class PPOAgent:
@@ -270,7 +305,14 @@ class PPOAgent:
         self.env = env
         self.policy = policy
         self.value_head = value_head
-        self.optimizer = optim.Adam(list(policy.parameters()) + list(value_head.parameters()), lr=lr)
+        
+        # Initialize optimizer based on available networks
+        if value_head is None:
+            # When using a combined actor-critic policy (like HuggingFaceActorCriticPolicy)
+            self.optimizer = optim.Adam(policy.parameters(), lr=lr)
+        else:
+            # When using separate policy and value_head networks
+            self.optimizer = optim.Adam(list(policy.parameters()) + list(value_head.parameters()), lr=lr)
         
         # PPO parameters
         self.gamma = gamma
@@ -300,9 +342,14 @@ class PPOAgent:
             screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0
             
             # Get action from policy
-            with torch.no_grad():
-                action, log_prob = self.policy.act(screen_tensor)
-                value = self.value_head(screen_tensor.unsqueeze(0)).squeeze()
+            with torch.no_grad():  # Use no_grad here since we're just collecting trajectories
+                if self.value_head is None:
+                    # Combined actor-critic policy
+                    action, log_prob, value = self.policy.act(screen_tensor)
+                else:
+                    # Separate policy and value networks
+                    action, log_prob = self.policy.act(screen_tensor)
+                    value = self.value_head(screen_tensor.unsqueeze(0)).squeeze()
             
             # Take action in environment
             next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -454,13 +501,16 @@ class PPOAgent:
             'entropy': entropy.item()
         }
     
-    def train(self, num_iterations=100, steps_per_iteration=2048):
+    def train(self, num_iterations=1500, steps_per_iteration=2048):
         """Train the agent for a specified number of iterations."""
         total_steps = 0
         episode_rewards = []
         episode_reward = 0
         
         obs, info = self.env.reset()
+
+        total_rewards = []
+        total_losses = []
         
         for iteration in range(num_iterations):
             # Collect trajectories
@@ -480,6 +530,15 @@ class PPOAgent:
             print(f"  Policy loss: {losses['policy_loss']:.4f}")
             print(f"  Value loss: {losses['value_loss']:.4f}")
             print(f"  Entropy: {losses['entropy']:.4f}")
+
+            total_rewards.append(mean_reward)
+            total_losses.append(losses['policy_loss'] + losses['value_loss'] + losses['entropy'])
+
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('basic_ppo_total_rewards.npy', total_rewards_array)
+        np.save('basic_ppo_total_losses.npy', total_losses_array)
             
         return episode_rewards
 
@@ -552,47 +611,55 @@ def train_vizdoom_basic():
     patch_size = max(divisors) if divisors else 16
     print(f"Using patch size: {patch_size}")
     
-    # Create BasicViT policy network
-    policy = BasicViT(
-        img_size=(img_height, img_width),
-        patch_size=patch_size,
-        in_channels=channels,
-        num_classes=act_space,
-        embed_dim=128,
-        depth=4,  # Use fewer transformer blocks for faster training
-        num_heads=4,
-        dropout=0.1,
-        pad_if_needed=True,
-    )
-    
     # Choose which agent to train
     algorithm = input("Choose algorithm (reinforce/ac/ppo): ").lower()
     
+    # Model settings for TinyViT
+    model_settings = {
+        'img_size': (img_height, img_width),
+        'in_channels': channels,
+        'num_classes': act_space,
+        'resize_inputs': True
+    }
+    
+    print("Using non-pretrained tiny ViT model (faster training)")
+    
     if algorithm == "reinforce":
-        # Train with REINFORCE
-        print("\nTraining with REINFORCE algorithm")
+        # Use the TinyViT for REINFORCE (actor only)
+        print("\nTraining with REINFORCE algorithm using TinyViT")
+        policy = TinyViTPolicy(**model_settings)
         agent = REINFORCEAgent(env=env, policy=policy, lr=0.0001, gamma=0.99)
-        rewards = agent.train(num_episodes=100, max_steps=1000)
+        rewards = agent.train(num_episodes=1500, max_steps=1000)
         
     elif algorithm == "ac":
-        # Create value head for Actor-Critic
-        value_head = create_value_head(policy)
+        # Use the TinyViT with Actor-Critic head
+        print("\nTraining with Actor-Critic algorithm using TinyViT")
+        policy = TinyViTActorCriticPolicy(**model_settings)
+        # Since our TinyViTActorCriticPolicy includes both actor and critic,
+        # we pass it directly to the ActorCriticAgent
+        agent = ActorCriticAgent(env=env, policy=policy, value_head=None, lr=0.0001, gamma=0.99)
         
-        # Train with Actor-Critic
-        print("\nTraining with Actor-Critic algorithm")
-        agent = ActorCriticAgent(env=env, policy=policy, value_head=value_head, lr=0.0001, gamma=0.99)
-        rewards = agent.train(num_episodes=100, max_steps=1000)
+        # Need to monkey-patch the ActorCriticAgent since it expects separate policy and value_head
+        # We override the get_value method to use our combined policy
+        original_get_value = agent.get_value
+        def new_get_value(self, state):
+            with torch.no_grad():
+                _, value = self.policy.forward(state)
+                return value.item()
+        agent.get_value = types.MethodType(new_get_value, agent)
+        
+        rewards = agent.train(num_episodes=1000, max_steps=1000)
         
     elif algorithm == "ppo":
-        # Create value head for PPO
-        value_head = create_value_head(policy)
+        # Use the TinyViT with Actor-Critic head for PPO
+        print("\nTraining with PPO algorithm using TinyViT")
+        policy = TinyViTActorCriticPolicy(**model_settings)
         
-        # Train with PPO
-        print("\nTraining with PPO algorithm")
+        # Create PPO agent with our policy
         agent = PPOAgent(
             env=env, 
             policy=policy, 
-            value_head=value_head, 
+            value_head=None,  # Not used with our combined policy 
             lr=3e-4,
             gamma=0.99,
             clip_ratio=0.2,
@@ -602,7 +669,13 @@ def train_vizdoom_basic():
             update_epochs=4,
             mini_batch_size=64
         )
-        rewards = agent.train(num_iterations=50, steps_per_iteration=2048)
+        
+        # Override evaluate method to use our policy's evaluate method
+        def new_evaluate(self, obs, actions):
+            return self.policy.evaluate(obs, actions)
+        agent.evaluate = types.MethodType(new_evaluate, agent)
+        
+        rewards = agent.train(num_iterations=1500, steps_per_iteration=2048)
         
     else:
         print("Invalid algorithm choice. Please choose 'reinforce', 'ac', or 'ppo'.")
