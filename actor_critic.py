@@ -158,11 +158,22 @@ class ActorCriticAgent:
         return loss.item()
     
     def train(self, num_episodes=500, max_steps=1000):
+        total_rewards = []
+        total_losses = []
         for episode in range(num_episodes):
             trajectory = self.collect_trajectory(max_steps)
             loss = self.update_policy(trajectory)
             total_reward = sum(trajectory['rewards'])
             print(f"Episode {episode+1}: Total Reward = {total_reward:.2f}, Loss = {loss:.4f}")
+            total_rewards.append(total_reward)
+            total_losses.append(loss)
+
+        # Save the total rewards and losses to a file
+        total_rewards_array = np.array(total_rewards)
+        total_losses_array = np.array(total_losses)
+        np.save('a2c_total_rewards.npy', total_rewards_array)
+        np.save('a2c_total_losses.npy', total_losses_array)
+       
 
 
 if __name__ == "__main__":
