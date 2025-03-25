@@ -35,10 +35,10 @@ class REINFORCEAgent:
             screen = obs['screen']
             
             # Convert screen to tensor and normalize
-            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0  # (C, H, W)
+            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1)  # (C, H, W)
             
             # Get action from policy - using training=True to maintain gradients
-            action, log_prob = self.policy.act(screen_tensor, training=True)
+            action, log_prob = self.policy.act(screen_tensor)
             
             # Take action in environment
             next_obs, reward, terminated, truncated, info = self.env.step(action)
@@ -167,15 +167,15 @@ class ActorCriticAgent:
             screen = obs['screen']
             
             # Convert screen to tensor and normalize
-            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0
+            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1)
             
             # Get action from policy and value estimate
             if self.value_head is None:
                 # Use the combined actor-critic policy
-                action, log_prob, value = self.policy.act(screen_tensor, training=True)
+                action, log_prob, value = self.policy.act(screen_tensor)
             else:
                 # Use separate policy and value networks
-                action, log_prob = self.policy.act(screen_tensor, training=True)
+                action, log_prob = self.policy.act(screen_tensor)
                 value = self.value_head(screen_tensor.unsqueeze(0))
             
             # Take action in environment
@@ -339,7 +339,7 @@ class PPOAgent:
             screen = obs['screen']
             
             # Convert screen to tensor and normalize
-            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1) / 255.0
+            screen_tensor = torch.FloatTensor(screen).permute(2, 0, 1)
             
             # Get action from policy
             with torch.no_grad():  # Use no_grad here since we're just collecting trajectories
