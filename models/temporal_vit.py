@@ -7,12 +7,13 @@ class PatchEmbedding(nn.Module):
     """
     Image to Patch Embedding with position embeddings.
     """
-    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768, pad_if_needed=True):
+    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768, device=None, pad_if_needed=True):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
         self.in_channels = in_channels
         self.pad_if_needed = pad_if_needed
+        self.device = device
         
         # Calculate target dimensions that are divisible by patch_size
         if isinstance(img_size, int):
@@ -210,6 +211,7 @@ class TemporalViT(nn.Module):
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         dropout (float): Dropout rate.
         pad_if_needed (bool): Whether to pad input images to ensure dimensions are divisible by patch_size.
+        device (str or torch.device, optional): Device to use ('cpu', 'cuda'). If None, uses cuda if available.
     """
     def __init__(
         self,
@@ -222,8 +224,14 @@ class TemporalViT(nn.Module):
         mlp_ratio=4.0,
         dropout=0.0,
         pad_if_needed=True,
+        device=None,
     ):
         super().__init__()
+        
+        # Set device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device
         
         # Save parameters
         self.img_size = img_size
@@ -248,6 +256,7 @@ class TemporalViT(nn.Module):
             in_channels=in_channels,
             embed_dim=embed_dim,
             pad_if_needed=pad_if_needed,
+            device=device,
         )
         
         # Spatial transformer block for individual frames
@@ -282,6 +291,10 @@ class TemporalViT(nn.Module):
         
         # Initialize position embeddings with proper 2D structure
         self._init_pos_embed()
+        
+        # Move model to device
+        self.to(device)
+        print(f"TemporalViT model initialized on: {device}")
     
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -351,6 +364,10 @@ class TemporalViT(nn.Module):
         Returns:
             Embedded representation of shape (1, n_patches+1, embed_dim)
         """
+        # Ensure input is on the correct device
+        if img.device != self.device:
+            img = img.to(self.device)
+            
         # Handle singleton dimension if present
         if len(img.shape) == 4 and img.shape[0] == 1:
             img = img.squeeze(0)
@@ -385,6 +402,11 @@ class TemporalViT(nn.Module):
             3. Temporal sequence is processed through a temporal transformer
             4. Final prediction is made from the last temporal token
         """
+        # Ensure input is a tensor on the correct device
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(np.array(x), dtype=torch.float32, device=self.device)
+        elif x.device != self.device:
+            x = x.to(self.device)
         
         # Process each image through spatial embedding and transformer
         T = x.shape[0]  # Number of frames in sequence
@@ -427,9 +449,15 @@ class TemporalViT(nn.Module):
         
         Returns the action and the log probability of that action.
         """ 
-        # Make sure input is a tensor
+        # Make sure input is a tensor on the correct device
         if not isinstance(obs, torch.Tensor):
-            obs = torch.tensor(np.array(obs))
+            obs = torch.tensor(np.array(obs), dtype=torch.float32, device=self.device)
+        elif obs.device != self.device:
+            obs = obs.to(self.device)
+            
+        # Normalize if not already done
+        if obs.max() > 1.0:
+            obs = obs / 255.0
             
         # Remove any extra dimensions if needed
         if len(obs.shape) > 4:  # If shape is (B, T, C, H, W)
@@ -450,8 +478,31 @@ class TemporalViT(nn.Module):
         # Get log probability of the action
         log_prob = dist.log_prob(action)  # scalar
         
+        # Move action and log_prob to CPU for returning
+        action_cpu = action.cpu()
+        log_prob_cpu = log_prob.cpu()
+        
         # Return action as int and log_prob as tensor (for backpropagation)
-        return action.item(), log_prob
+        return action_cpu.item(), log_prob_cpu
+        
+    @staticmethod
+    def get_device(device=None):
+        """
+        Helper method to get the best available device.
+        
+        Args:
+            device: Specified device or None to auto-detect
+            
+        Returns:
+            torch.device: The device to use
+        """
+        if device is not None:
+            return torch.device(device)
+        
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        else:
+            return torch.device('cpu')
 
 # Usage example (for reference only)
 if __name__ == "__main__":
@@ -460,8 +511,12 @@ if __name__ == "__main__":
     patch_size = 16
     batch_size = 4
     
+    # Get device
+    device = TemporalViT.get_device()
+    print(f"Using device: {device}")
+    
     # Create a random tensor of size (batch_size, channels, height, width)
-    x = torch.randn(batch_size, 3, img_size, img_size)
+    x = torch.randn(batch_size, 3, img_size, img_size, device=device)
     
     # Initialize the model
     model = TemporalViT(
@@ -472,6 +527,7 @@ if __name__ == "__main__":
         embed_dim=768,
         num_heads=12,
         dropout=0.1,
+        device=device,
     )
     
     # Forward pass
