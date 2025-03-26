@@ -155,6 +155,7 @@ class BasicViT(nn.Module):
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         dropout (float): Dropout rate.
         pad_if_needed (bool): Whether to pad input images.
+        device (str or torch.device, optional): Device to use ('cpu', 'cuda', 'mps'). If None, uses cuda if available.
     """
     def __init__(
         self,
@@ -168,8 +169,14 @@ class BasicViT(nn.Module):
         mlp_ratio=4.0,
         dropout=0.0,
         pad_if_needed=True,
+        device=None,
     ):
         super().__init__()
+        
+        # Set device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = device
         
         # Save parameters
         self.img_size = img_size
@@ -205,6 +212,10 @@ class BasicViT(nn.Module):
         
         # Initialize weights
         self.apply(self._init_weights)
+        
+        # Move model to device
+        self.to(device)
+        print(f"BasicViT model initialized on: {device}")
     
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -225,9 +236,11 @@ class BasicViT(nn.Module):
         Returns:
             logits: Class logits of shape (B, num_classes)
         """
-        # Make sure input is a tensor
+        # Make sure input is a tensor and on the correct device
         if not isinstance(x, torch.Tensor):
-            x = torch.tensor(np.array(x), dtype=torch.float32)
+            x = torch.tensor(np.array(x), dtype=torch.float32, device=self.device)
+        else:
+            x = x.to(self.device)
             
         # Handle single image case by adding batch dimension
         if len(x.shape) == 3:  # (C, H, W)
@@ -262,9 +275,11 @@ class BasicViT(nn.Module):
             action: Index of the selected action
             log_prob: Log probability of the selected action
         """
-        # Make sure input is a tensor
+        # Make sure input is a tensor and on the correct device
         if not isinstance(obs, torch.Tensor):
-            obs = torch.tensor(np.array(obs), dtype=torch.float32)
+            obs = torch.tensor(np.array(obs), dtype=torch.float32, device=self.device)
+        else:
+            obs = obs.to(self.device)
             
         # Normalize if not already done
         if obs.max() > 1.0:
@@ -289,4 +304,29 @@ class BasicViT(nn.Module):
         # Get log probability
         log_prob = dist.log_prob(action)
         
-        return action.item(), log_prob 
+        # Move action to CPU for returning to environment
+        action_cpu = action.cpu()
+        log_prob_cpu = log_prob.cpu()
+        
+        return action_cpu.item(), log_prob_cpu
+    
+    @staticmethod
+    def get_device(device=None):
+        """
+        Helper method to get the best available device.
+        
+        Args:
+            device: Specified device or None to auto-detect
+            
+        Returns:
+            torch.device: The device to use
+        """
+        if device is not None:
+            return torch.device(device)
+        
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            return torch.device('mps')  # For Apple Silicon
+        else:
+            return torch.device('cpu') 
