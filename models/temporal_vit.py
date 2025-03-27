@@ -225,6 +225,8 @@ class TemporalViT(nn.Module):
         dropout=0.0,
         pad_if_needed=True,
         device=None,
+        num_spatial_blocks=3,
+        num_temporal_blocks=3,
     ):
         super().__init__()
         
@@ -258,22 +260,28 @@ class TemporalViT(nn.Module):
             pad_if_needed=pad_if_needed,
             device=device,
         )
+
+        # Define spatial blocks with their own normalization
+        self.spatial_blocks = nn.ModuleList([
+            Block(embed_dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, dropout=dropout)
+            for _ in range(num_spatial_blocks)
+        ])
         
-        # Spatial transformer block for individual frames
-        self.spatial_block = Block(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            dropout=dropout,
-        )
+        # Define spatial norms - one per block plus final
+        self.spatial_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim) for _ in range(num_spatial_blocks + 1)
+        ])
         
-        # Temporal transformer block for sequence of frames
-        self.temporal_block = Block(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            dropout=dropout,
-        )
+        # Define temporal blocks with their own normalization
+        self.temporal_blocks = nn.ModuleList([
+            Block(embed_dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, dropout=dropout)
+            for _ in range(num_temporal_blocks)
+        ])
+        
+        # Define temporal norms - one per block plus final
+        self.temporal_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim) for _ in range(num_temporal_blocks + 1)
+        ])
         
         # Temporal position embeddings
         self.temporal_pos_embed = nn.Parameter(torch.zeros(1, 100, embed_dim))  # Support up to 100 frames
@@ -356,13 +364,7 @@ class TemporalViT(nn.Module):
     
     def process_single_image(self, img):
         """
-        Process a single image through patch embedding and spatial transformer.
-        
-        Args:
-            img: Single image of shape (C, H, W) or (1, C, H, W)
-            
-        Returns:
-            Embedded representation of shape (1, n_patches+1, embed_dim)
+        Process a single image through multiple spatial blocks
         """
         # Ensure input is on the correct device
         if img.device != self.device:
@@ -375,32 +377,20 @@ class TemporalViT(nn.Module):
         # Patch embedding
         x = self.patch_embed(img)  # (1, n_patches+1, embed_dim)
         
-        # Apply spatial transformer block
-        x = self.spatial_block(x)  # (1, n_patches+1, embed_dim)
+        # Apply multiple spatial transformer blocks with their own norms
+        for i, block in enumerate(self.spatial_blocks):
+            # Pre-norm before each block
+            x_norm = self.spatial_norms[i](x)
+            x = x + block(x_norm)  # Residual connection
         
-        # Apply layer norm
-        x = self.spatial_norm(x)  # (1, n_patches+1, embed_dim)
+        # Final spatial normalization
+        x = self.spatial_norms[-1](x)  # Use the last norm for final output
         
         return x
     
     def forward(self, x):
         """
-        Process a sequence of images through spatial and temporal transformers.
-        
-        Args:
-            x: Temporal sequence of frames with shape (T, C, H, W) where:
-               - T is the temporal window size (e.g., 4 recent frames)
-               - C is the number of channels
-               - H, W are the height and width of each frame
-            
-        Returns:
-            Class logits of shape (num_classes)
-            
-        Process:
-            1. Each frame is processed individually through spatial embedding and transformer
-            2. CLS tokens from all frames are collected to form a temporal sequence
-            3. Temporal sequence is processed through a temporal transformer
-            4. Final prediction is made from the last temporal token
+        Process a sequence of images through spatial and temporal blocks
         """
         # Ensure input is a tensor on the correct device
         if not isinstance(x, torch.Tensor):
@@ -408,39 +398,44 @@ class TemporalViT(nn.Module):
         elif x.device != self.device:
             x = x.to(self.device)
         
-        # Process each image through spatial embedding and transformer
-        T = x.shape[0]  # Number of frames in sequence
-        
-        # Process images one by one (batch-size agnostic)
+        # Process each image through spatial blocks
         spatial_embeddings = []
-        for t in range(T):
-            img = x[t]  # (C, H, W)
-            embedded_img = self.process_single_image(img)  # (1, n_patches+1, embed_dim)
+        for t in range(x.shape[0]):
+            img = x[t]
+            embedded_img = self.process_single_image(img)
             
-            # Extract CLS token representation
-            cls_token = embedded_img[:, 0:1, :]  # (1, 1, embed_dim)
-            spatial_embeddings.append(cls_token)
+            # Use the entire token sequence instead of just the class token
+            spatial_embeddings.append(embedded_img)
         
-        # Stack all CLS token embeddings along temporal dimension
-        temporal_sequence = torch.cat(spatial_embeddings, dim=1)  # (1, T, embed_dim)
+        # Concatenate all tokens from all frames
+        # If each frame has N tokens, this will create a sequence of T*N tokens
+        temporal_sequence = torch.cat(spatial_embeddings, dim=1)
         
-        # Add temporal position embeddings
-        temporal_pos_embed = self.temporal_pos_embed[:, :T, :]
-        temporal_sequence = temporal_sequence + temporal_pos_embed
+        # Need to adjust position embeddings accordingly
+        # Create expanded temporal position embeddings for all tokens from each frame
+        frame_lengths = [embed.size(1) for embed in spatial_embeddings]
+        expanded_pos_embed = []
+        for t, length in enumerate(frame_lengths):
+            # Use the same temporal position embedding for all tokens from the same frame
+            pos_embed_t = self.temporal_pos_embed[:, t:t+1, :].expand(-1, length, -1)
+            expanded_pos_embed.append(pos_embed_t)
+        expanded_pos_embed = torch.cat(expanded_pos_embed, dim=1)
         
-        # Apply temporal transformer block
-        temporal_sequence = self.temporal_block(temporal_sequence)  # (1, T, embed_dim)
+        # Add position embeddings
+        temporal_sequence = temporal_sequence + expanded_pos_embed
         
-        # Apply layer norm
-        temporal_sequence = self.temporal_norm(temporal_sequence)  # (1, T, embed_dim)
+        # Process with temporal blocks as before
+        for i, block in enumerate(self.temporal_blocks):
+            x_norm = self.temporal_norms[i](temporal_sequence)
+            temporal_sequence = temporal_sequence + block(x_norm)
         
-        # Use the last token for classification
-        x = self.head(temporal_sequence[:, -1])  # (1, num_classes)
+        # Final layer norm
+        temporal_sequence = self.temporal_norms[-1](temporal_sequence)
         
-        # Remove batch dimension
-        x = x.squeeze(0)  # (num_classes)
+        # Global average pooling over all tokens for final representation
+        x = self.head(temporal_sequence.mean(dim=1))
         
-        return x
+        return x.squeeze(0)
     
     def act(self, obs):
         """

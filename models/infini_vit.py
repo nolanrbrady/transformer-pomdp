@@ -236,7 +236,7 @@ class InfiniAttention(nn.Module):
     
 class TemporalBlock(nn.Module):
     """
-    Temporal Transformer Block: Multi-Head Attention + MLP with LayerNorm.
+    Temporal Transformer Block using InfiniAttention and MLP with LayerNorm.
     """
     def __init__(self, embed_dim, num_heads, memory_size=64, window_size=8, mlp_ratio=4.0, dropout=0.0):
         super().__init__()
@@ -255,7 +255,7 @@ class TemporalBlock(nn.Module):
     def forward(self, x):
         """
         Forward pass for the TemporalBlock.
-        X: (B, C, H, W)
+        X: (B, T, D) - Batch, Sequence length, Embedding dimension
         """
         x = x + self.attn(self.norm1(x))
         x = x + self.mlp(self.norm2(x))
@@ -264,7 +264,7 @@ class TemporalBlock(nn.Module):
 
 class InfiniViT(nn.Module):
     """
-    Infini Vision Transformer with a single transformer block.
+    Infini Vision Transformer with multiple transformer blocks.
     
     Args:
         img_size (int or tuple): Input image size (height, width).
@@ -273,10 +273,14 @@ class InfiniViT(nn.Module):
         num_classes (int): Number of classes for classification.
         embed_dim (int): Embedding dimension. 
         num_heads (int): Number of attention heads.
+        memory_size (int): Size of the memory buffer for InfiniAttention.
+        window_size (int): Size of the window for local attention in InfiniAttention.
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         dropout (float): Dropout rate.
         pad_if_needed (bool): Whether to pad input images to ensure dimensions are divisible by patch_size.
         device (str or torch.device, optional): Device to use ('cpu', 'cuda'). If None, uses cuda if available.
+        num_spatial_blocks (int): Number of spatial transformer blocks.
+        num_temporal_blocks (int): Number of temporal transformer blocks.
     """
     def __init__(
         self,
@@ -292,6 +296,8 @@ class InfiniViT(nn.Module):
         dropout=0.0,
         pad_if_needed=True,
         device=None,
+        num_spatial_blocks=3,
+        num_temporal_blocks=3,
     ):
         super().__init__()
         
@@ -330,31 +336,43 @@ class InfiniViT(nn.Module):
             device=device,
         )
         
-        # Spatial transformer block for individual frames
-        self.spatial_block = Block(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            dropout=dropout,
-        )
+        # Define spatial blocks with their own normalization
+        self.spatial_blocks = nn.ModuleList([
+            Block(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                dropout=dropout,
+            )
+            for _ in range(num_spatial_blocks)
+        ])
         
-        # Temporal transformer block for sequence of frames
-        self.temporal_block = TemporalBlock(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            mlp_ratio=mlp_ratio,
-            dropout=dropout,
-            memory_size=memory_size,
-            window_size=window_size,
-        )
+        # Define spatial norms - one per block plus final
+        self.spatial_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim) for _ in range(num_spatial_blocks + 1)
+        ])
+        
+        # Define temporal blocks with their own normalization
+        self.temporal_blocks = nn.ModuleList([
+            TemporalBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                dropout=dropout,
+                memory_size=memory_size,
+                window_size=window_size,
+            )
+            for _ in range(num_temporal_blocks)
+        ])
+        
+        # Define temporal norms - one per block plus final
+        self.temporal_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim) for _ in range(num_temporal_blocks + 1)
+        ])
         
         # Temporal position embeddings
-        self.temporal_pos_embed = nn.Parameter(torch.zeros(1, memory_size, embed_dim))  # Support up to 100 frames
+        self.temporal_pos_embed = nn.Parameter(torch.zeros(1, memory_size, embed_dim))  # Support up to memory_size frames
         nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
-        
-        # Layer Norm
-        self.spatial_norm = nn.LayerNorm(embed_dim)
-        self.temporal_norm = nn.LayerNorm(embed_dim)
         
         # Classification head
         self.head = nn.Linear(embed_dim, num_classes)
@@ -367,7 +385,7 @@ class InfiniViT(nn.Module):
         
         # Move model to device
         self.to(device)
-        print(f"TemporalViT model initialized on: {device}")
+        print(f"InfiniViT model initialized on: {device}")
     
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -429,13 +447,7 @@ class InfiniViT(nn.Module):
     
     def process_single_image(self, img):
         """
-        Process a single image through patch embedding and spatial transformer.
-        
-        Args:
-            img: Single image of shape (C, H, W) or (1, C, H, W)
-            
-        Returns:
-            Embedded representation of shape (1, n_patches+1, embed_dim)
+        Process a single image through multiple spatial blocks
         """
         # Ensure input is on the correct device
         if img.device != self.device:
@@ -448,11 +460,14 @@ class InfiniViT(nn.Module):
         # Patch embedding
         x = self.patch_embed(img)  # (1, n_patches+1, embed_dim)
         
-        # Apply spatial transformer block
-        x = self.spatial_block(x)  # (1, n_patches+1, embed_dim)
+        # Apply multiple spatial transformer blocks with pre-normalization
+        for i, block in enumerate(self.spatial_blocks):
+            # Pre-norm before each block
+            x_norm = self.spatial_norms[i](x)
+            x = x + block(x_norm)  # Residual connection
         
-        # Apply layer norm
-        x = self.spatial_norm(x)  # (1, n_patches+1, embed_dim)
+        # Final spatial normalization
+        x = self.spatial_norms[-1](x)  # Use the last norm for final output
         
         return x
     
@@ -468,12 +483,6 @@ class InfiniViT(nn.Module):
             
         Returns:
             Class logits of shape (num_classes)
-            
-        Process:
-            1. Each frame is processed individually through spatial embedding and transformer
-            2. CLS tokens from all frames are collected to form a temporal sequence
-            3. Temporal sequence is processed through a temporal transformer
-            4. Final prediction is made from the last temporal token
         """
         # Ensure input is a tensor on the correct device
         if not isinstance(x, torch.Tensor):
@@ -484,36 +493,44 @@ class InfiniViT(nn.Module):
         # Process each image through spatial embedding and transformer
         T = x.shape[0]  # Number of frames in sequence
         
-        # Process images one by one (batch-size agnostic)
+        # Process images one by one
         spatial_embeddings = []
         for t in range(T):
             img = x[t]  # (C, H, W)
             embedded_img = self.process_single_image(img)  # (1, n_patches+1, embed_dim)
             
-            # Extract CLS token representation
-            cls_token = embedded_img[:, 0:1, :]  # (1, 1, embed_dim)
-            spatial_embeddings.append(cls_token)
+            # Use the entire token sequence instead of just the class token
+            spatial_embeddings.append(embedded_img)
         
-        # Stack all CLS token embeddings along temporal dimension
-        temporal_sequence = torch.cat(spatial_embeddings, dim=1)  # (1, T, embed_dim)
+        # Concatenate all tokens from all frames
+        # If each frame has N tokens, this will create a sequence of T*N tokens
+        temporal_sequence = torch.cat(spatial_embeddings, dim=1)
         
-        # Add temporal position embeddings
-        temporal_pos_embed = self.temporal_pos_embed[:, :T, :]
-        temporal_sequence = temporal_sequence + temporal_pos_embed
+        # Need to adjust position embeddings accordingly
+        # Create expanded temporal position embeddings for all tokens from each frame
+        frame_lengths = [embed.size(1) for embed in spatial_embeddings]
+        expanded_pos_embed = []
+        for t, length in enumerate(frame_lengths):
+            # Use the same temporal position embedding for all tokens from the same frame
+            pos_embed_t = self.temporal_pos_embed[:, t:t+1, :].expand(-1, length, -1)
+            expanded_pos_embed.append(pos_embed_t)
+        expanded_pos_embed = torch.cat(expanded_pos_embed, dim=1)
         
-        # Apply temporal transformer block
-        temporal_sequence = self.temporal_block(temporal_sequence)  # (1, T, embed_dim)
+        # Add position embeddings
+        temporal_sequence = temporal_sequence + expanded_pos_embed
         
-        # Apply layer norm
-        temporal_sequence = self.temporal_norm(temporal_sequence)  # (1, T, embed_dim)
+        # Process with temporal blocks as before
+        for i, block in enumerate(self.temporal_blocks):
+            x_norm = self.temporal_norms[i](temporal_sequence)
+            temporal_sequence = temporal_sequence + block(x_norm)
         
-        # Use the last token for classification
-        x = self.head(temporal_sequence[:, -1])  # (1, num_classes)
+        # Final layer norm
+        temporal_sequence = self.temporal_norms[-1](temporal_sequence)
         
-        # Remove batch dimension
-        x = x.squeeze(0)  # (num_classes)
+        # Global average pooling over all tokens for final representation
+        x = self.head(temporal_sequence.mean(dim=1))
         
-        return x
+        return x.squeeze(0)
     
     def act(self, obs):
         """
@@ -582,17 +599,17 @@ if __name__ == "__main__":
     # Example usage
     img_size = 224
     patch_size = 16
-    batch_size = 4
+    temporal_window = 4
     
     # Get device
-    device = TemporalViT.get_device()
+    device = InfiniViT.get_device()
     print(f"Using device: {device}")
     
-    # Create a random tensor of size (batch_size, channels, height, width)
-    x = torch.randn(batch_size, 3, img_size, img_size, device=device)
+    # Create a random tensor of size (temporal_window, channels, height, width)
+    x = torch.randn(temporal_window, 3, img_size, img_size, device=device)
     
     # Initialize the model
-    model = TemporalViT(
+    model = InfiniViT(
         img_size=img_size,
         patch_size=patch_size,
         in_channels=3,
@@ -601,8 +618,12 @@ if __name__ == "__main__":
         num_heads=12,
         dropout=0.1,
         device=device,
+        memory_size=64,
+        window_size=8,
+        num_spatial_blocks=3,
+        num_temporal_blocks=3,
     )
     
     # Forward pass
     output = model(x)
-    print(f"Output shape: {output.shape}")  # Should be (batch_size, num_classes)
+    print(f"Output shape: {output.shape}")  # Should be (num_classes)

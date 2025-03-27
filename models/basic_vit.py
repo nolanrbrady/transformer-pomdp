@@ -118,7 +118,7 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-class TransformerBlock(nn.Module):
+class Block(nn.Module):
     """
     Transformer Block: Multi-Head Attention + MLP with LayerNorm.
     """
@@ -150,7 +150,7 @@ class BasicViT(nn.Module):
         in_channels (int): Number of input channels.
         num_classes (int): Number of output classes (actions).
         embed_dim (int): Embedding dimension.
-        depth (int): Number of transformer blocks.
+        num_blocks (int): Number of transformer blocks.
         num_heads (int): Number of attention heads.
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         dropout (float): Dropout rate.
@@ -164,7 +164,7 @@ class BasicViT(nn.Module):
         in_channels=3,
         num_classes=1000,
         embed_dim=768,
-        depth=6,
+        num_blocks=6,  # Renamed from depth to num_blocks for consistency
         num_heads=12,
         mlp_ratio=4.0,
         dropout=0.0,
@@ -193,18 +193,23 @@ class BasicViT(nn.Module):
             pad_if_needed=pad_if_needed,
         )
         
-        # Transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(
+        # Define spatial blocks with their own normalization (renamed from blocks)
+        self.spatial_blocks = nn.ModuleList([
+            Block(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
                 dropout=dropout,
             )
-            for _ in range(depth)
+            for _ in range(num_blocks)
         ])
         
-        # Layer Norm
+        # Define spatial norms - one per block plus final
+        self.spatial_norms = nn.ModuleList([
+            nn.LayerNorm(embed_dim) for _ in range(num_blocks + 1)
+        ])
+        
+        # Layer Norm (keeping for backward compatibility)
         self.norm = nn.LayerNorm(embed_dim)
         
         # Classification head
@@ -226,6 +231,34 @@ class BasicViT(nn.Module):
             nn.init.zeros_(m.bias)
             nn.init.ones_(m.weight)
     
+    def process_single_image(self, x):
+        """
+        Process a single image through patch embedding and multiple spatial blocks.
+        
+        Args:
+            x: Image tensor of shape (B, C, H, W)
+            
+        Returns:
+            Processed tensor of shape (B, n_patches+1, embed_dim)
+        """
+        # Ensure input is on the correct device
+        if x.device != self.device:
+            x = x.to(self.device)
+            
+        # Patch embedding
+        x = self.patch_embed(x)  # (B, n_patches+1, embed_dim)
+        
+        # Apply multiple spatial transformer blocks with pre-normalization
+        for i, block in enumerate(self.spatial_blocks):
+            # Pre-norm before each block
+            x_norm = self.spatial_norms[i](x)
+            x = x + block(x_norm)  # Residual connection
+        
+        # Final spatial normalization
+        x = self.spatial_norms[-1](x)  # Use the last norm for final output
+        
+        return x
+    
     def forward(self, x):
         """
         Forward pass for a batch of images.
@@ -246,17 +279,11 @@ class BasicViT(nn.Module):
         if len(x.shape) == 3:  # (C, H, W)
             x = x.unsqueeze(0)  # Add batch dimension: (1, C, H, W)
             
-        # Patch embedding
-        x = self.patch_embed(x)  # (B, n_patches+1, embed_dim)
+        # Process through embedding and transformer blocks
+        x = self.process_single_image(x)  # (B, n_patches+1, embed_dim)
         
-        # Apply transformer blocks
-        for block in self.blocks:
-            x = block(x)
-        
-        # Apply layer norm
-        x = self.norm(x)
-        
-        # Use CLS token for classification
+        # Use all tokens for output, not just CLS token
+        # For backward compatibility, we'll still use the CLS token for final classification
         x = x[:, 0]  # (B, embed_dim)
         
         # Classification head
