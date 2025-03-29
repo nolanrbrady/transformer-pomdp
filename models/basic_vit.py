@@ -274,7 +274,7 @@ class BasicViT(nn.Module):
             x = x + block(x_norm)  # Residual connection
         
         # Final spatial normalization
-        x = self.spatial_norms[-1](x)  # Use the last norm for final output
+        # x = self.spatial_norms[-1](x)  # Use the last norm for final output
         
         return x
     
@@ -303,12 +303,9 @@ class BasicViT(nn.Module):
         
         # Use all tokens for output, not just CLS token
         # For backward compatibility, we'll still use the CLS token for final classification
-        x = x[:, 0]  # (B, embed_dim)
+        x = x.mean(dim=1)  # Average over all tokens
         
-        # Classification head
-        x = self.head(x)  # (B, num_classes)
-        
-        return x
+        return x  # Return CLS token embedding as feature vector
     
     def act(self, obs):
         """
@@ -375,4 +372,4 @@ class BasicViT(nn.Module):
         elif torch.backends.mps.is_available():
             return torch.device('mps')  # For Apple Silicon
         else:
-            return torch.device('cpu') 
+            return torch.device('cpu')
