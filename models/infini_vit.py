@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from torchvision.transforms import Resize, Compose, ToTensor
 
 class PatchEmbedding(nn.Module):
     """
     Image to Patch Embedding with position embeddings.
     """
-    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768, device=None, pad_if_needed=True):
+    def __init__(self, img_size=84, patch_size=14, in_channels=3, embed_dim=768, device=None, pad_if_needed=True):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
@@ -284,8 +285,8 @@ class InfiniViT(nn.Module):
     """
     def __init__(
         self,
-        img_size=224,
-        patch_size=16,
+        img_size=84,
+        patch_size=14,
         in_channels=3,
         num_classes=1000,
         embed_dim=1024,
@@ -310,6 +311,13 @@ class InfiniViT(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
+
+        # Create image resize transform
+        if isinstance(img_size, int):
+            target_size = (img_size, img_size)
+        else:
+            target_size = img_size
+        self.resize_transform = Resize(target_size)
 
         # Attention parameters
         self.memory_size = memory_size
@@ -457,6 +465,17 @@ class InfiniViT(nn.Module):
         if len(img.shape) == 4 and img.shape[0] == 1:
             img = img.squeeze(0)
         
+        # Resize image to target size (84x84)
+        C, H, W = img.shape
+        if H != self.img_size or W != self.img_size:
+            if isinstance(self.img_size, int):
+                target_h = target_w = self.img_size
+            else:
+                target_h, target_w = self.img_size
+                
+            if (H, W) != (target_h, target_w):
+                img = self.resize_transform(img)
+        
         # Patch embedding
         x = self.patch_embed(img)  # (1, n_patches+1, embed_dim)
         
@@ -497,6 +516,18 @@ class InfiniViT(nn.Module):
         spatial_embeddings = []
         for t in range(T):
             img = x[t]  # (C, H, W)
+            
+            # Resize here if needed (e.g., if input sequence is not already 84x84)
+            C, H, W = img.shape
+            if H != self.img_size or W != self.img_size:
+                if isinstance(self.img_size, int):
+                    target_h = target_w = self.img_size
+                else:
+                    target_h, target_w = self.img_size
+                    
+                if (H, W) != (target_h, target_w):
+                    img = self.resize_transform(img)
+                    
             embedded_img = self.process_single_image(img)  # (1, n_patches+1, embed_dim)
             
             # Use the entire token sequence instead of just the class token

@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from torchvision.transforms import Resize, Compose, ToTensor
 
 class PatchEmbedding(nn.Module):
     """
     Image to Patch Embedding.
     """
-    def __init__(self, img_size=224, patch_size=16, in_channels=3, embed_dim=768, pad_if_needed=True):
+    def __init__(self, img_size=84, patch_size=14, in_channels=3, embed_dim=768, pad_if_needed=True):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
@@ -159,8 +160,8 @@ class BasicViT(nn.Module):
     """
     def __init__(
         self,
-        img_size=224,
-        patch_size=16,
+        img_size=84,
+        patch_size=14,
         in_channels=3,
         num_classes=1000,
         embed_dim=768,
@@ -183,6 +184,13 @@ class BasicViT(nn.Module):
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.num_classes = num_classes
+        
+        # Create image resize transform
+        if isinstance(img_size, int):
+            target_size = (img_size, img_size)
+        else:
+            target_size = img_size
+        self.resize_transform = Resize(target_size)
         
         # Patch + Position Embedding
         self.patch_embed = PatchEmbedding(
@@ -244,6 +252,17 @@ class BasicViT(nn.Module):
         # Ensure input is on the correct device
         if x.device != self.device:
             x = x.to(self.device)
+        
+        # Resize image to target size (84x84)
+        B, C, H, W = x.shape
+        if H != self.img_size or W != self.img_size:
+            if isinstance(self.img_size, int):
+                target_h = target_w = self.img_size
+            else:
+                target_h, target_w = self.img_size
+                
+            if (H, W) != (target_h, target_w):
+                x = self.resize_transform(x)
             
         # Patch embedding
         x = self.patch_embed(x)  # (B, n_patches+1, embed_dim)
