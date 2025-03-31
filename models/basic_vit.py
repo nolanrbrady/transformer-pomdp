@@ -163,7 +163,7 @@ class BasicViT(nn.Module):
         img_size=84,
         patch_size=14,
         in_channels=3,
-        num_classes=1000,
+        num_classes=6,
         embed_dim=768,
         num_blocks=6,  # Renamed from depth to num_blocks for consistency
         num_heads=12,
