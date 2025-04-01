@@ -18,14 +18,14 @@ import torch.nn.functional as F
 import numpy as np
 from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
-import gymnasium as gym
+import gym
 
 # Import model
 from models.infini_vit import InfiniViT
 
 def make_headless_env(env_id="VizdoomCorridor-v0"):
     def _init():
-        env = gym.make(env_id)
+        env = gym.make(env_id, render_mode=None)  # Ensure headless mode
         env.unwrapped.game.set_window_visible(False)  # Prevent GUI on HPC
         env.unwrapped.game.set_render_hud(False)
         env.unwrapped.game.set_render_decals(False)
@@ -189,7 +189,3 @@ model.save("ppo_infini_vit_vizdoom")
 
 
 # In[ ]:
-
-
-
-
