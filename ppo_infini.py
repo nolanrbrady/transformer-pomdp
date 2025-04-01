@@ -18,9 +18,23 @@ import torch.nn.functional as F
 import numpy as np
 from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
+import gymnasium as gym
 
 # Import model
 from models.infini_vit import InfiniViT
+
+def make_headless_env(env_id="VizdoomCorridor-v0"):
+    def _init():
+        env = gym.make(env_id)
+        env.unwrapped.game.set_window_visible(False)  # Prevent GUI on HPC
+        env.unwrapped.game.set_render_hud(False)
+        env.unwrapped.game.set_render_decals(False)
+        env.unwrapped.game.set_render_particles(False)
+        env.unwrapped.game.set_render_effects_sprites(False)
+        env.unwrapped.game.set_render_corpses(False)
+        env.unwrapped.game.set_screen_format(gymnasium_wrapper.vizdoom.ScreenFormat.RGB24)
+        return env
+    return _init
 
 
 # In[ ]:
@@ -155,7 +169,7 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
+env = make_vec_env(make_headless_env("VizdoomCorridor-v0"), n_envs=8)
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
