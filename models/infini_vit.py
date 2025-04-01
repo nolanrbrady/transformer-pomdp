@@ -145,7 +145,7 @@ class Block(nn.Module):
         return x
 
 class InfiniAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads, memory_size=64, window_size=8, dropout=0.1, ema_decay=0.9):
+    def __init__(self, embed_dim, num_heads, memory_size=64, window_size=8, update_interval=5, dropout=0.1, ema_decay=0.9):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -154,6 +154,8 @@ class InfiniAttention(nn.Module):
         self.head_dim = embed_dim // num_heads
         self.ema_decay = ema_decay  # Exponential moving average decay
         self.gate_param = nn.Parameter(torch.zeros(1))
+        self.update_interval = update_interval
+        self.step_counter = 0
         
         assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
         
@@ -192,11 +194,13 @@ class InfiniAttention(nn.Module):
         out = self.out_proj(out)
         
         # EMA Memory Update
-        new_summary = x[:, -self.window_size:, :].mean(dim=1, keepdim=True)
+        self.step_counter += 1
         if not self.memory_initialized.item():
+            new_summary = x[:, -self.window_size:, :].mean(dim=1, keepdim=True)
             self.memory.copy_(new_summary.mean(dim=0, keepdim=True).repeat(1, self.memory_size, 1).detach())
             self.memory_initialized.fill_(True)
-        else:
+        elif self.step_counter % self.update_interval == 0:
+            new_summary = x[:, -self.window_size:, :].mean(dim=1, keepdim=True)
             ema_updated = self.ema_decay * self.memory[:, -1:, :] + (1 - self.ema_decay) * new_summary.mean(dim=0, keepdim=True)
             self.memory = torch.cat([self.memory[:, 1:], ema_updated.detach()], dim=1)
         
@@ -206,10 +210,10 @@ class TemporalBlock(nn.Module):
     """
     Temporal Transformer Block using InfiniAttention and MLP with LayerNorm.
     """
-    def __init__(self, embed_dim, num_heads, memory_size=64, window_size=8, mlp_ratio=4.0, dropout=0.0):
+    def __init__(self, embed_dim, num_heads, memory_size=64, window_size=8, update_interval=5, mlp_ratio=4.0, dropout=0.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
-        self.attn = InfiniAttention(embed_dim, num_heads, memory_size=memory_size, window_size=window_size, dropout=dropout)
+        self.attn = InfiniAttention(embed_dim, num_heads, memory_size=memory_size, window_size=window_size, update_interval=update_interval, dropout=dropout)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.mlp = MLP(embed_dim, int(embed_dim * mlp_ratio), embed_dim, dropout)
     
@@ -233,6 +237,7 @@ class InfiniViT(nn.Module):
         num_heads=12,
         memory_size=64,
         window_size=8,
+        update_interval=5,
         mlp_ratio=4.0,
         dropout=0.0,
         pad_if_needed=True,
@@ -251,6 +256,7 @@ class InfiniViT(nn.Module):
         self.embed_dim = embed_dim
         self.memory_size = memory_size
         self.window_size = window_size
+        self.update_interval = update_interval
         
         # Determine target size based on img_size type
         if isinstance(img_size, int):
@@ -282,8 +288,7 @@ class InfiniViT(nn.Module):
         
         # Temporal transformer blocks and norms
         self.temporal_blocks = nn.ModuleList([
-            TemporalBlock(embed_dim, num_heads, mlp_ratio=mlp_ratio, dropout=dropout,
-                          memory_size=memory_size, window_size=window_size)
+            TemporalBlock(embed_dim, num_heads, memory_size=memory_size, window_size=window_size, update_interval=update_interval, mlp_ratio=mlp_ratio, dropout=dropout)
             for _ in range(num_temporal_blocks)
         ])
         self.temporal_norms = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(num_temporal_blocks + 1)])
