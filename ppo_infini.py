@@ -18,7 +18,16 @@ import torch.nn.functional as F
 import numpy as np
 from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
-import gym
+import vizdoom.gymnasium_wrapper.scenarios.basic
+import vizdoom.gymnasium_wrapper.scenarios.corridor
+import vizdoom.gymnasium_wrapper.scenarios.defend_the_center
+import vizdoom.gymnasium_wrapper.scenarios.defend_the_line
+import vizdoom.gymnasium_wrapper.scenarios.health_gathering
+import vizdoom.gymnasium_wrapper.scenarios.my_way_home
+import vizdoom.gymnasium_wrapper.scenarios.prediction
+import vizdoom.gymnasium_wrapper.scenarios.take_cover
+import vizdoom.gymnasium_wrapper
+vizdoom.gymnasium_wrapper.register_all_scenarios()
 
 # Import model
 from models.infini_vit import InfiniViT
