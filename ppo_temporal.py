@@ -80,8 +80,8 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
             mlp_ratio=2.0,
             pad_if_needed=True,
             device=device,
-            num_spatial_blocks=6,
-            num_temporal_blocks=4,
+            num_spatial_blocks=3,
+            num_temporal_blocks=3,
         )
         
         # Initialize frame history buffers 
@@ -155,7 +155,7 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env("VizdoomBasic-v0", n_envs=4)
+env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
@@ -170,7 +170,7 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=100_000)
+model.learn(total_timesteps=2_000_000)
 model.save("ppo_temporal_vit_vizdoom")
 
 

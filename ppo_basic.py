@@ -116,7 +116,7 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env("VizdoomBasic-v0", n_envs=4)
+env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
@@ -131,49 +131,8 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=100_000)
+model.learn(total_timesteps=2_000_000)
 model.save("ppo_basic_vit_vizdoom")
-
-
-# In[15]:
-
-
-from stable_baselines3.common.torch_layers import NatureCNN
-from stable_baselines3.common.policies import MultiInputActorCriticPolicy
-from stable_baselines3 import PPO
-from stable_baselines3.common.env_util import make_vec_env
-
-import gym
-import torch as th
-import torch.nn as nn
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
-class ScreenOnlyCNN(BaseFeaturesExtractor):
-    def __init__(self, observation_space: gym.spaces.Dict, features_dim: int = 512):
-        # Extract the screen space
-        super().__init__(observation_space, features_dim)
-
-        # This assumes the screen is (C, H, W)
-        self.cnn = NatureCNN(observation_space.spaces["screen"], features_dim)
-
-    def forward(self, observations):
-        return self.cnn(observations["screen"])
-
-# Setup environment
-env = make_vec_env("VizdoomBasic-v0", n_envs=4)
-
-# Set policy_kwargs to use custom feature extractor
-policy_kwargs = dict(
-    features_extractor_class=ScreenOnlyCNN,
-    features_extractor_kwargs=dict(features_dim=512)
-)
-
-# Train the model
-model = PPO("MultiInputPolicy", env, policy_kwargs=policy_kwargs, verbose=1)
-model.learn(total_timesteps=100_000)
-
-
-# In[ ]:
 
 
 
