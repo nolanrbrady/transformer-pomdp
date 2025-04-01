@@ -150,8 +150,6 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
             
         # Stack all features into a batch
         features = th.stack(features, dim=0)
-        print(f"Features mean: {features.mean().item():.4f}, std: {features.std().item():.4f}")
-        print(f"Features Batch Variance: {features.var(dim=0).mean().item():.6f}")
         return features
 
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
