@@ -163,8 +163,8 @@ class InfiniAttention(nn.Module):
         
         # Learned compressive projection for memory
         self.memory_proj = nn.Linear(embed_dim, embed_dim)
-        self.register_buffer("memory", torch.zeros(1, memory_size, embed_dim))
-        self.register_buffer("memory_initialized", torch.tensor(False))
+        self.register_buffer("memory", torch.zeros(1, memory_size, embed_dim, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
+        self.register_buffer("memory_initialized", torch.tensor(False, device=torch.device("cuda" if torch.cuda.is_available() else "cpu")))
     
     def forward(self, x):
         B, T, C = x.shape
@@ -193,9 +193,9 @@ class InfiniAttention(nn.Module):
         
         # EMA Memory Update
         new_summary = x[:, -self.window_size:, :].mean(dim=1, keepdim=True)
-        if not self.memory_initialized:
-            self.memory = new_summary.mean(dim=0, keepdim=True).repeat(1, self.memory_size, 1).detach()
-            self.memory_initialized = torch.tensor(True, device=x.device)
+        if not self.memory_initialized.item():
+            self.memory.copy_(new_summary.mean(dim=0, keepdim=True).repeat(1, self.memory_size, 1).detach())
+            self.memory_initialized.fill_(True)
         else:
             ema_updated = self.ema_decay * self.memory[:, -1:, :] + (1 - self.ema_decay) * new_summary.mean(dim=0, keepdim=True)
             self.memory = torch.cat([self.memory[:, 1:], ema_updated.detach()], dim=1)
