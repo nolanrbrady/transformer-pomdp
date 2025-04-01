@@ -3,46 +3,89 @@
 
 # In[1]:
 
-
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, ActorCriticCnnPolicy
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.ppo import PPO
 import torch as th
 import torch.nn as nn
-from collections import deque
-import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
-import vizdoom.gymnasium_wrapper.scenarios.basic
-import vizdoom.gymnasium_wrapper.scenarios.corridor
-import vizdoom.gymnasium_wrapper.scenarios.defend_the_center
-import vizdoom.gymnasium_wrapper.scenarios.defend_the_line
-import vizdoom.gymnasium_wrapper.scenarios.health_gathering
-import vizdoom.gymnasium_wrapper.scenarios.my_way_home
-import vizdoom.gymnasium_wrapper.scenarios.prediction
-import vizdoom.gymnasium_wrapper.scenarios.take_cover
-import vizdoom.gymnasium_wrapper
-vizdoom.gymnasium_wrapper.register_all_scenarios()
+import gymnasium as gym
+from gymnasium.envs.registration import register
+
+# Register VizDoom environments
+def register_vizdoom_envs():
+    """Register VizDoom environments with Gymnasium."""
+    try:
+        # Check if already registered
+        if 'VizdoomCorridor-v0' not in gym.envs.registry:
+            # Register the environments
+            register(
+                id='VizdoomCorridor-v0',
+                entry_point='vizdoom.gymnasium_wrapper.scenarios:VizdoomScenarioEnv',
+                kwargs={'scenario_file': 'deadly_corridor.cfg'}
+            )
+            print("Registered VizdoomCorridor-v0 environment")
+        
+        # Verify registration
+        print(f"VizdoomCorridor-v0 registered: {'VizdoomCorridor-v0' in gym.envs.registry}")
+        return True
+    except Exception as e:
+        print(f"Error registering environments: {e}")
+        return False
+
+# Register environments
+register_success = register_vizdoom_envs()
 
 # Import model
 from models.infini_vit import InfiniViT
 
 def make_headless_env(env_id="VizdoomCorridor-v0"):
     def _init():
-        env = gym.make(env_id, render_mode=None)  # Ensure headless mode
-        env.unwrapped.game.set_window_visible(False)  # Prevent GUI on HPC
-        env.unwrapped.game.set_render_hud(False)
-        env.unwrapped.game.set_render_decals(False)
-        env.unwrapped.game.set_render_particles(False)
-        env.unwrapped.game.set_render_effects_sprites(False)
-        env.unwrapped.game.set_render_corpses(False)
-        env.unwrapped.game.set_screen_format(gymnasium_wrapper.vizdoom.ScreenFormat.RGB24)
-        return env
+        try:
+            # Try direct creation instead of gym.make for more control
+            from vizdoom.gymnasium_wrapper.scenarios import VizdoomScenarioEnv
+            
+            # Map environment IDs to scenarios
+            scenario_map = {
+                "VizdoomCorridor-v0": "deadly_corridor.cfg",
+                "VizdoomBasic-v0": "basic.cfg",
+                # Add others as needed
+            }
+            
+            # Get the right scenario file
+            scenario_file = scenario_map.get(env_id, "deadly_corridor.cfg")
+            
+            # Create environment directly
+            env = VizdoomScenarioEnv(scenario_file=scenario_file, render_mode=None)
+            print(f"Created environment with scenario: {scenario_file}")
+            
+            # Configure for headless mode
+            if hasattr(env.unwrapped, 'game'):
+                game = env.unwrapped.game
+                game.set_window_visible(False)
+                game.set_sound_enabled(False)
+                game.set_render_hud(False)
+                game.set_render_decals(False)
+                game.set_render_particles(False)
+                game.set_render_effects_sprites(False)
+                game.set_render_corpses(False)
+                game.set_screen_format(gymnasium_wrapper.vizdoom.ScreenFormat.RGB24)
+                print("Configured game for headless operation")
+            
+            return env
+            
+        except Exception as e:
+            print(f"Error creating environment: {e}")
+            # Fall back to regular gym.make as a last resort
+            env = gym.make(env_id, render_mode=None)
+            return env
+            
     return _init
 
 
@@ -178,7 +221,11 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env(make_headless_env("VizdoomCorridor-v0"), n_envs=8)
+env = make_vec_env(
+    make_headless_env("VizdoomCorridor-v0"),
+    n_envs=8
+)
+
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
