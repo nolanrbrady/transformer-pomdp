@@ -171,8 +171,10 @@ class BasicViT(nn.Module):
         dropout=0.0,
         pad_if_needed=True,
         device=None,
+        *args,
+        **kwargs
     ):
-        super().__init__()
+        super().__init__(*args, **kwargs)
         
         # Set device
         if device is None:
@@ -373,3 +375,4 @@ class BasicViT(nn.Module):
             return torch.device('mps')  # For Apple Silicon
         else:
             return torch.device('cpu')
+        

@@ -115,24 +115,30 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
-# Environment Setup
-env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
-obs_space = env.observation_space['screen']
-act_space = env.action_space.n
-img_height, img_width, channels = obs_space.shape
+def train_agent(total_timesteps=2_000_000, save_path="ppo_basic_vit_vizdoom"):
+    # Environment Setup
+    env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
+    obs_space = env.observation_space['screen']
+    act_space = env.action_space.n
+    img_height, img_width, channels = obs_space.shape
 
-# Train PPO Agent
-model = PPO(
-    "MultiInputPolicy", 
-    env,
-    policy_kwargs=dict(
-        features_extractor_class=ViTFeatureExtractor,
-        features_extractor_kwargs=dict(features_dim=512)
-    ),
-    verbose=1
-)
-model.learn(total_timesteps=2_000_000)
-model.save("ppo_basic_vit_vizdoom")
+    # Train PPO Agent
+    model = PPO(
+        "MultiInputPolicy", 
+        env,
+        policy_kwargs=dict(
+            features_extractor_class=ViTFeatureExtractor,
+            features_extractor_kwargs=dict(features_dim=512)
+        ),
+        verbose=1
+    )
+    model.learn(total_timesteps=total_timesteps)
+    model.save(save_path)
+
+
+if __name__ == "__main__":
+    train_agent()
+
 
 
 
