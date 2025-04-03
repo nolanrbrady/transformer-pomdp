@@ -157,7 +157,7 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env("VizdoomCorridor-v0", n_envs=4)
+env = make_vec_env("VizdoomMyWayHome-v0", n_envs=4)
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
@@ -172,8 +172,8 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=2_000_000)
-model.save("ppo_vit_infini_vizdoom")
+model.learn(total_timesteps=1_000_000)
+model.save("ppo_vit_infini_my_way_home")
 
 
 # In[ ]:

@@ -6,7 +6,7 @@
 #SBATCH --nodes=1                            # Run all processes on a single node
 #SBATCH --ntasks=1                           # Run a single task
 #SBATCH --time=2-00:00:00                 # Time limit hrs:min:sec
-#SBATCH --output=run_policy_temporal.log           # Standard output and error log
+#SBATCH --output=run_policy_temporal_my_way_home.log           # Standard output and error log
 #SBATCH --gres=gpu:1                      # request 1 gpu
 
 
