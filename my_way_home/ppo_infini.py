@@ -20,10 +20,10 @@ from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
 
 # Import model
-from models.temporal_vit import TemporalViT
+from models.infini_vit import InfiniViT
 
 
-# In[3]:
+# In[ ]:
 
 
 # Custom Features Extractor using BasicViT
@@ -70,7 +70,7 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
         device = th.device("cuda" if th.cuda.is_available() else "cpu")
         
         # Create the ViT with fixed in_channels=3 for RGB
-        self.vit = TemporalViT(
+        self.vit = InfiniViT(
             img_size=(h, w),
             patch_size=patch_size,
             in_channels=3,  # IMPORTANT: Force to 3 for RGB images
@@ -78,10 +78,14 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
             embed_dim=features_dim,
             num_heads=4,
             mlp_ratio=2.0,
+            memory_size=256, # number of short term memory fragments to remember
+            window_size=32, # Short term memory length
+            dropout=0.1,
             pad_if_needed=True,
             device=device,
             num_spatial_blocks=3,
             num_temporal_blocks=3,
+            update_interval=5, # number of frames between updating the long term memory
         )
         
         # Initialize frame history buffers 
@@ -118,7 +122,6 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
         batch_size = obs.shape[0]
         if not self.initialized or self.frame_buffers is None or len(self.frame_buffers) != batch_size:
             self.reset_history(batch_size)
-            
         
         # Update each environment's frame buffer by replacing the oldest frame
         for i in range(batch_size):
@@ -148,14 +151,13 @@ class ViTFeatureExtractor(BaseFeaturesExtractor):
             
         # Stack all features into a batch
         features = th.stack(features, dim=0)
-        # print(f"Features mean: {features.mean().item():.4f}, std: {features.std().item():.4f}")
-        # print(f"Features Batch variance: {features.var(dim=0).mean().item():.6f}")
+        
         return features
 
 print(f"PyTorch device check: {th.device('cuda' if th.cuda.is_available() else 'cpu')}")
 
 # Environment Setup
-env = make_vec_env("VizdoomCorridor-v0", n_envs=8)
+env = make_vec_env("VizdoomCorridor-v0", n_envs=4)
 obs_space = env.observation_space['screen']
 act_space = env.action_space.n
 img_height, img_width, channels = obs_space.shape
@@ -171,7 +173,7 @@ model = PPO(
     verbose=1
 )
 model.learn(total_timesteps=2_000_000)
-model.save("ppo_temporal_vit_vizdoom")
+model.save("ppo_vit_infini_vizdoom")
 
 
 # In[ ]:
