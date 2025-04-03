@@ -2642,3 +2642,26 @@ Initialized frame buffers for 4 environments with 4 frames each
 |    policy_gradient_loss | 0.000174      |
 |    value_loss           | 6.62e+03      |
 -------------------------------------------
+Initialized frame buffers for 64 environments with 4 frames each
+Initialized frame buffers for 4 environments with 4 frames each
+-------------------------------------------
+| rollout/                |               |
+|    ep_len_mean          | 60.8          |
+|    ep_rew_mean          | 207           |
+| time/                   |               |
+|    fps                  | 10            |
+|    iterations           | 116           |
+|    time_elapsed         | 93423         |
+|    total_timesteps      | 950272        |
+| train/                  |               |
+|    approx_kl            | 0.00021110571 |
+|    clip_fraction        | 0.00219       |
+|    clip_range           | 0.2           |
+|    entropy_loss         | -0.0264       |
+|    explained_variance   | -1.19e-07     |
+|    learning_rate        | 0.0003        |
+|    loss                 | 2.82e+03      |
+|    n_updates            | 1150          |
+|    policy_gradient_loss | -4.32e-05     |
+|    value_loss           | 6.51e+03      |
+-------------------------------------------
