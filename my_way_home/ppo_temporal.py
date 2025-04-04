@@ -20,6 +20,9 @@ from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
 
 # Import model
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.temporal_vit import TemporalViT
 
 

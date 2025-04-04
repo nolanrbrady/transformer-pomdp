@@ -18,8 +18,11 @@ import torch.nn.functional as F
 import numpy as np
 from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
+import sys
+import os
 
 # Import model
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.infini_vit import InfiniViT
 
 
