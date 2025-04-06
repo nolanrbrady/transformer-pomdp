@@ -302,9 +302,7 @@ class TemporalViT(nn.Module):
         x = x.mean(dim=1)  # (1, embed_dim)
         x = x.squeeze(0)
         
-        # Final classification head
-        logits = self.head(x)
-        return logits
+        return x
     
     def act(self, obs):
         """

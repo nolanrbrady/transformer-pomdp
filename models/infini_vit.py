@@ -375,8 +375,7 @@ class InfiniViT(nn.Module):
         # Global average pooling over all tokens for final feature representation
         x = x.mean(dim=1)  # (1, embed_dim)
         x = x.squeeze(0)
-        logits = self.head(x)
-        return logits
+        return x
     
     def act(self, obs):
         """
