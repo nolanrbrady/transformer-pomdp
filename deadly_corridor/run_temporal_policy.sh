@@ -9,6 +9,17 @@
 #SBATCH --output=run_policy_temporal.log           # Standard output and error log
 #SBATCH --gres=gpu:1                      # request 1 gpu
 
+# Activate your conda environment
+source ~/.bashrc
+conda activate vizdoom
+
+# SDL2 from source
+export SDL2_DIR=$HOME/libs/sdl2
+export LD_LIBRARY_PATH=$SDL2_DIR/lib:$LD_LIBRARY_PATH
+export LIBRARY_PATH=$SDL2_DIR/lib:$LIBRARY_PATH
+export CPATH=$SDL2_DIR/include:$CPATH
+export PKG_CONFIG_PATH=$SDL2_DIR/lib/pkgconfig:$PKG_CONFIG_PATH
+export CMAKE_PREFIX_PATH=$SDL2_DIR:$CMAKE_PREFIX_PATH
 
 # Execute the training script
 python ppo_temporal.py

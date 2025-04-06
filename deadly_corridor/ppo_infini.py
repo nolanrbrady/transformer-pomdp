@@ -20,6 +20,9 @@ from gymnasium.wrappers import ResizeObservation
 from vizdoom import gymnasium_wrapper
 
 # Import model
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.infini_vit import InfiniViT
 
 
@@ -172,7 +175,7 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=2_000_000)
+model.learn(total_timesteps=1_000_000)
 model.save("ppo_vit_infini_vizdoom")
 
 

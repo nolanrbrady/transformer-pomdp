@@ -170,7 +170,7 @@ model = PPO(
     ),
     verbose=1
 )
-model.learn(total_timesteps=2_000_000)
+model.learn(total_timesteps=1_000_000)
 model.save("ppo_temporal_vit_vizdoom")
 
 
