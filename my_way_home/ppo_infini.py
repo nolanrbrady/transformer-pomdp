@@ -19,7 +19,7 @@ from models.infini_vit import InfiniViT
 
 # Custom Features Extractor
 class ViTFeatureExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space, features_dim=512, frame_history=4):
+    def __init__(self, observation_space, features_dim=512, frame_history=32):
         super().__init__(observation_space, features_dim)
         self.frame_history = frame_history
         self.observation_space = observation_space
@@ -110,5 +110,5 @@ model = PPO(
     env=env,
     verbose=1
 )
-model.learn(total_timesteps=285_000)
+model.learn(total_timesteps=500_000)
 model.save("ppo_vit_infini_my_way_home_large_vf")
