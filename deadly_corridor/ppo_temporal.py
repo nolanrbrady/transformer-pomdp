@@ -28,7 +28,7 @@ from models.temporal_vit import TemporalViT
 
 # Custom Features Extractor using BasicViT
 class ViTFeatureExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space, features_dim=512, frame_history=4):
+    def __init__(self, observation_space, features_dim=512, frame_history=32):
         super().__init__(observation_space, features_dim)
         
         # Frame history length
@@ -166,11 +166,11 @@ model = PPO(
     env,
     policy_kwargs=dict(
         features_extractor_class=ViTFeatureExtractor,
-        features_extractor_kwargs=dict(features_dim=512)
+        features_extractor_kwargs=dict(features_dim=512, frame_history=32)
     ),
     verbose=1
 )
-model.learn(total_timesteps=1_000_000)
+model.learn(total_timesteps=280_000)
 model.save("ppo_temporal_vit_vizdoom")
 
 

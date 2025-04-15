@@ -110,5 +110,5 @@ model = PPO(
     env=env,
     verbose=1
 )
-model.learn(total_timesteps=500_000)
+model.learn(total_timesteps=280_000)
 model.save("ppo_vit_infini_my_way_home_large_vf")
