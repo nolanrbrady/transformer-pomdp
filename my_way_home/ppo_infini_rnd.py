@@ -279,8 +279,8 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
             next_obs, extrinsic_reward, terminated, truncated, _ = env.step(action.cpu().item())
             done = terminated or truncated
             
-            # Calculate rewards
-            total_reward = extrinsic_reward + 0.01 * intrinsic_reward
+            reward_weight = torch.nn.Parameter(torch.tensor(0.125, dtype=torch.float32).clamp(0.01, 0.25))  # Learnable parameter clamped between 0.01 and 0.25
+            total_reward = extrinsic_reward + reward_weight * intrinsic_reward
             episode_reward += extrinsic_reward
             episode_length += 1
 
@@ -404,6 +404,11 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
                 rnd_loss.backward()
                 rnd_optimizer.step()
                 
+                # Update reward weight
+                reward_weight_loss = -torch.mean(torch.tensor(ret_batch, device=device) * reward_weight)
+                reward_weight_loss.backward()
+                reward_weight.data.clamp_(0.01, 0.25)  # Ensure reward weight stays in bounds
+                
                 # Record losses
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
@@ -411,8 +416,8 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
                 rnd_losses.append(rnd_loss.item())
                 
             # Calculate explained variance
-            y_pred = np.array(buffer.values)
-            y_true = np.array(buffer.returns)
+            y_pred = np.array([v.detach().cpu().numpy() for v in buffer.values])
+            y_true = np.array([r.detach().cpu().numpy() for r in buffer.returns])
             y_var = np.var(y_true)
             explained_var = 1 - np.var(y_true - y_pred) / (y_var + 1e-8)
             
