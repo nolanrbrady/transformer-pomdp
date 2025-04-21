@@ -92,7 +92,8 @@ class RolloutBuffer:
         self.rewards.append(reward)
         self.dones.append(done)
         self.log_probs.append(log_prob)
-        self.values.append(value)
+        # Clone and detach value before storing to prevent potential side effects
+        self.values.append(value.clone().detach())
         self.features.append(feature)
 
     def finish_path(self, gamma=0.99, lam=0.95):
@@ -118,8 +119,8 @@ class RolloutBuffer:
                 torch.stack([self.obs[i] for i in indices[start:end]]),
                 torch.tensor([self.actions[i] for i in indices[start:end]]),
                 torch.tensor([self.log_probs[i] for i in indices[start:end]]),
-                torch.tensor([self.advantages[i] for i in indices[start:end]]),
-                torch.tensor([self.returns[i] for i in indices[start:end]]),
+                torch.stack([self.advantages[i] for i in indices[start:end]]),
+                torch.stack([self.returns[i] for i in indices[start:end]]),
                 torch.stack([self.features[i] for i in indices[start:end]])
             ]
 
@@ -229,7 +230,12 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
     agent = PPOAgent(vit_encoder, env.action_space.n).to(device)
     print("Models initialized on device")
 
-    optimizer = torch.optim.Adam(list(agent.parameters()) + list(vit_encoder.parameters()), lr=2.5e-4)
+    # Define reward weight as a learnable parameter
+    reward_weight = torch.nn.Parameter(torch.tensor(0.125, dtype=torch.float32, device=device))
+    reward_weight.register_hook(lambda grad: grad.clamp_(-1, 1)) # Optional: Clamp gradient
+
+    # Include reward_weight in the main optimizer
+    optimizer = torch.optim.Adam(list(agent.parameters()) + list(vit_encoder.parameters()) + [reward_weight], lr=2.5e-4)
     rnd_optimizer = torch.optim.Adam(rnd_model.predictor.parameters(), lr=1e-4)
 
     buffer = RolloutBuffer()
@@ -279,13 +285,15 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
             next_obs, extrinsic_reward, terminated, truncated, _ = env.step(action.cpu().item())
             done = terminated or truncated
             
-            reward_weight = torch.nn.Parameter(torch.tensor(0.125, dtype=torch.float32).clamp(0.01, 0.25))  # Learnable parameter clamped between 0.01 and 0.25
-            total_reward = extrinsic_reward + reward_weight * intrinsic_reward
+            # Calculate total reward using the learnable weight (parameter defined outside loop)
+            # Clamp the weight during calculation to ensure it stays within bounds for reward scaling
+            clamped_reward_weight = reward_weight.data.clamp(0.01, 0.25)
+            total_reward = extrinsic_reward + clamped_reward_weight * intrinsic_reward
             episode_reward += extrinsic_reward
             episode_length += 1
 
             # Store transition in buffer
-            buffer.store(obs_tensor, action.item(), total_reward, done, log_prob.item(), value.item(), feature.squeeze(0))
+            buffer.store(obs_tensor, action.item(), total_reward, done, log_prob.item(), value, feature.squeeze(0))
             
             # Update observation
             obs = next_obs
@@ -389,24 +397,36 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
                 # Entropy bonus
                 entropy_loss = dist.entropy().mean()
                 
-                # Total loss
+                # Total loss for agent
                 total_loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_loss
                 
-                # Update agent
+                # Backpropagate agent loss (calculates grads for agent + vit)
                 optimizer.zero_grad()
+                rnd_optimizer.zero_grad()
+
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(agent.parameters(), 0.5)
-                optimizer.step()
+                # Optimizer step for agent+vit+reward_weight will happen after all grads are computed
                 
                 # RND update - learning from surprise
-                rnd_loss = rnd_model(feat_batch).mean()
-                rnd_optimizer.zero_grad()
+                # Detach feat_batch to prevent gradients flowing back to ViT from RND loss
+                rnd_loss = rnd_model(feat_batch.detach()).mean()
+                # Backpropagate RND loss (calculates grads for rnd_model.predictor)
                 rnd_loss.backward()
-                rnd_optimizer.step()
+                # Optimizer step for RND predictor will happen later
                 
                 # Update reward weight
-                reward_weight_loss = -torch.mean(torch.tensor(ret_batch, device=device) * reward_weight)
+                # Detach ret_batch to prevent gradients flowing back to value network
+                reward_weight_loss = -torch.mean(ret_batch.detach() * reward_weight)
+                # Backpropagate reward weight loss (calculates grads for reward_weight)
                 reward_weight_loss.backward()
+                # Optimizer step for reward_weight will happen with the main optimizer step
+                
+                # Step optimizers
+                optimizer.step() # Updates agent, vit, and reward_weight
+                rnd_optimizer.step() # Updates RND predictor
+
+                # Clamp reward weight *after* optimizer step
                 reward_weight.data.clamp_(0.01, 0.25)  # Ensure reward weight stays in bounds
                 
                 # Record losses
