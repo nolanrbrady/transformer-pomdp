@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=RND_MyWayHome             # Job name
+#SBATCH --job-name=infini_ivrl_my_way_home             # Job name
 #SBATCH --partition=gpu-a100-80g      # Partition
 #SBATCH --mail-type=ALL                    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=nobr3541@colorado.edu     # Where to send mail
 #SBATCH --nodes=1                            # Run all processes on a single node
 #SBATCH --ntasks=1                           # Run a single task
 #SBATCH --time=2-00:00:00                 # Time limit hrs:min:sec
-#SBATCH --output=run_policy_infini_rnd_my_way_home.log           # Standard output and error log
+#SBATCH --output=run_policy_infini_ivrl_my_way_home.log           # Standard output and error log
 #SBATCH --gres=gpu:1                      # request 1 gpu
 
 # Activate your conda environment
@@ -22,4 +22,4 @@ export PKG_CONFIG_PATH=$SDL2_DIR/lib/pkgconfig:$PKG_CONFIG_PATH
 export CMAKE_PREFIX_PATH=$SDL2_DIR:$CMAKE_PREFIX_PATH
 
 # Execute the training script
-python ppo_infini_rnd.py
+python ppo_infini_ivrl.py
