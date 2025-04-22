@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BasicViT_Policy             # Job name
+#SBATCH --job-name=vit_base_policy             # Job name
 #SBATCH --partition=gpu-a100-40g      # Partition
 #SBATCH --mail-type=ALL                    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=nobr3541@colorado.edu     # Where to send mail

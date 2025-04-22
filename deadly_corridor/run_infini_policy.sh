@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=InfiniViT_Policy             # Job name
+#SBATCH --job-name=infini_policy             # Job name
 #SBATCH --partition=gpu-a100-80g      # Partition
 #SBATCH --mail-type=ALL                    # Mail events (NONE, BEGIN, END, FAIL, ALL)
 #SBATCH --mail-user=nobr3541@colorado.edu     # Where to send mail
