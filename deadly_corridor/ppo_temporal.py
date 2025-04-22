@@ -33,21 +33,23 @@ class PPOAgent(nn.Module):
         )
 
     def forward(self, obs):
-        # Get features from ViT encoder
-        # Add batch dimension if needed - TemporalViT expects [B, T, C, H, W]
-        if obs.dim() == 4:  # [T, C, H, W]
-            obs = obs.unsqueeze(0)  # Add batch dimension -> [1, T, C, H, W]
-        
-        # Forward through TemporalViT
-        feat = self.vit.vit(obs)
-        
+        # If obs is a raw sequence [B, T, C, H, W], process it through TemporalViT
+        # The shape shows whether it's a sequence or features
+        if obs.dim() >= 4 and obs.shape[-3] == 3:  # Last 3 dims are [C, H, W]
+            # During batch training, obs_batch will be [B, T, C, H, W]
+            # Extract features using the TemporalViT model directly
+            feat = self.vit.vit(obs)  # TemporalViT model is directly at vit.vit
+        else:
+            # Otherwise, assume obs is already the features
+            feat = obs
+            
         # Forward through policy and value networks
         logits = self.policy(feat)
         value = self.value(feat)
-        return logits, value.squeeze(-1), feat # feat is the feature from the *last* frame in sequence
+        return logits, value.squeeze(-1), feat
 
     def get_action(self, obs_sequence):
-        # obs_sequence should be [T, C, H, W]
+        # obs_sequence should be either features or a sequence
         self.eval()
         with torch.no_grad():
             logits, value, feat = self.forward(obs_sequence)
@@ -117,21 +119,28 @@ class RolloutBuffer:
             # Stack sequences into a batch [B, T, C, H, W]
             obs_batch = torch.stack(batch_sequences)
 
-            # Get features from the ViT encoder for the batch of sequences
-            # Note: This recomputes features, potentially slow. Consider storing features if memory allows.
-            # REMOVED: Feature calculation moved to agent forward pass
-            # with torch.no_grad():
-            #     # TemporalViT expects [B, T, C, H, W]
-            #     feat_batch = vit_encoder.vit(obs_batch) # [B, Features]
-
+            # Convert advantages and returns properly
+            adv_batch = []
+            ret_batch = []
+            for i in batch_indices:
+                # Properly handle tensor conversion
+                if isinstance(self.advantages[i], torch.Tensor):
+                    adv_batch.append(self.advantages[i].clone().detach())
+                else:
+                    adv_batch.append(torch.tensor(self.advantages[i], dtype=torch.float32))
+                    
+                if isinstance(self.returns[i], torch.Tensor):
+                    ret_batch.append(self.returns[i].clone().detach())
+                else:
+                    ret_batch.append(torch.tensor(self.returns[i], dtype=torch.float32))
+            
             # Yield batch data
             yield (
                 obs_batch, # [B, T, C, H, W]
                 torch.tensor([self.actions[i] for i in batch_indices], dtype=torch.long),
-                torch.tensor([self.log_probs[i] for i in batch_indices]),
-                torch.stack([self.advantages[i] for i in batch_indices]),
-                torch.stack([self.returns[i] for i in batch_indices]),
-                # REMOVED: feat_batch
+                torch.tensor([self.log_probs[i] for i in batch_indices], dtype=torch.float32),
+                torch.stack(adv_batch),
+                torch.stack(ret_batch),
             )
 
     def clear(self):
@@ -190,12 +199,21 @@ class ViTFeatureWrapper(nn.Module):
         return obs_tensor # [C, H, W]
 
     def forward(self, obs_frame):
-        """Processes a single observation frame, updates buffer, returns sequence."""
+        """Processes a single observation frame, updates buffer, returns features."""
         # obs_frame should be preprocessed: [C, H, W]
         self.buffer.append(obs_frame.clone())
+        
         # Stack frames into a sequence [T, C, H, W]
         stacked = torch.stack(list(self.buffer), dim=0)
-        return stacked
+        
+        # Add batch dimension and pass directly through TemporalViT
+        # Shape: [1, T, C, H, W]
+        batched = stacked.unsqueeze(0)
+        
+        # Get features from TemporalViT
+        features = self.vit(batched)
+        
+        return features  # Return features directly [1, 512] -> will be squeezed in PPOAgent
 
 # Function to save model checkpoints
 def save_checkpoint(path, agent, optimizer, timesteps, rewards):
@@ -252,11 +270,13 @@ def train(env_id="VizdoomCorridor-v0", total_timesteps=1_000_000, rollout_len=40
         agent.eval()
 
         for t in range(rollout_len):
-            # Process current observation frame and get sequence
-            obs_sequence = vit_encoder.forward(current_obs_frame) # [T, C, H, W]
-
+            # Process current observation frame and get features directly
             with torch.no_grad():
-                action, log_prob, _, value, _ = agent.get_action(obs_sequence)
+                # Get features directly 
+                features = vit_encoder(current_obs_frame)  # Now returns features
+                
+                # Get action using features
+                action, log_prob, _, value, _ = agent.get_action(features)
 
             next_obs, reward, terminated, truncated, _ = env.step(action.cpu().item())
             done = terminated or truncated
@@ -332,15 +352,13 @@ def train(env_id="VizdoomCorridor-v0", total_timesteps=1_000_000, rollout_len=40
                 logp_batch = logp_batch.to(device)
                 adv_batch = adv_batch.to(device)
                 ret_batch = ret_batch.to(device)
-                # REMOVED: feat_batch = feat_batch.to(device)
 
-                adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + 1e-8)
+                # Normalize advantages
+                if adv_batch.shape[0] > 1:  # Only normalize if batch size > 1
+                    adv_batch = (adv_batch - adv_batch.mean()) / (adv_batch.std() + 1e-8)
 
-                # Forward pass using the *features* extracted during get_batches
-                # Need PPOAgent.forward to accept features directly OR recompute
-                # Let's modify PPOAgent to accept precomputed features if available
-                # For now, assume recomputation (simpler but slower):
-                logits, values, _ = agent(obs_batch_seq) # Recompute features inside agent.forward
+                # Forward pass through agent - will handle passing through TemporalViT
+                logits, values, _ = agent(obs_batch_seq)
 
                 probs = torch.softmax(logits, dim=-1)
                 dist = torch.distributions.Categorical(probs)

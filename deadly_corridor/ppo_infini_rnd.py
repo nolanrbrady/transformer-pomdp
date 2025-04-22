@@ -35,11 +35,25 @@ class RNDModel(nn.Module):
         )
 
     def forward(self, x):
+        # Handle both single vector and batched inputs
+        is_single = x.dim() == 1
+        if is_single:
+            x = x.unsqueeze(0)  # Add batch dimension if processing single feature vector
+            
         with torch.no_grad():
             target_out = self.target(x)
         pred_out = self.predictor(x)
-        # Return MSE loss per element in the batch
-        return F.mse_loss(pred_out, target_out, reduction="none").mean(dim=1)
+        
+        # Calculate MSE loss for each element in the hidden dimension
+        mse = F.mse_loss(pred_out, target_out, reduction="none")
+        
+        # Mean across the hidden dimension
+        result = mse.mean(dim=1)
+        
+        # If input was a single vector, return a scalar
+        if is_single:
+            return result.squeeze(0)
+        return result
 
 # === PPO Agent ===
 class PPOAgent(nn.Module):
@@ -159,7 +173,6 @@ class ViTFeatureWrapper(nn.Module):
         self.buffer = deque([empty_frame.clone() for _ in range(self.frame_history)], maxlen=self.frame_history)
         if hasattr(self.vit, 'reset_memory'):
             self.vit.reset_memory()
-        print("InfiniViT buffer reset")
 
     def process_observation(self, obs):
         if isinstance(obs, dict):
@@ -250,7 +263,7 @@ def train(env_id="VizdoomCorridor-v0", total_timesteps=1_000_000, rollout_len=40
         for t in range(rollout_len):
             with torch.no_grad():
                 action, log_prob, _, value, feature = agent.get_action(current_obs_frame)
-                intrinsic_reward = rnd_model(feature).item() # RND reward based on current feature
+                intrinsic_reward = rnd_model(feature).item()  # RND reward is now scalar for single feature
 
             next_obs, extrinsic_reward, terminated, truncated, _ = env.step(action.cpu().item())
             done = terminated or truncated

@@ -262,47 +262,67 @@ class TemporalViT(nn.Module):
     
     def forward(self, x):
         """
-        Expects input x of shape (T, C, H, W) where T is the number of frames.
+        Forward pass through the TemporalViT model.
+        Expects input shape (B, T, C, H, W).
+        Returns features of shape (B, embed_dim).
         """
-        # Ensure tensor is on the proper device and of type float32.
-        if not isinstance(x, torch.Tensor):
-            x = torch.tensor(np.array(x), dtype=torch.float32, device=self.device)
         x = x.to(self.device)
         
-        # If frames are not at target size, resize them using F.interpolate (GPU-friendly).
-        T, C, H, W = x.shape
+        # Get dimensions, B = batch size, T = time steps
+        B, T, C, H, W = x.shape
+        
         # Determine the target size depending on whether img_size is int or tuple.
         target_size = self.img_size if isinstance(self.img_size, tuple) else (self.img_size, self.img_size)
+        
+        # If frames are not at target size, resize them using F.interpolate.
+        # Reshape to (B*T, C, H, W) for interpolate, then back to (B, T, C, H, W)
         if H != target_size[0] or W != target_size[1]:
+            x = x.reshape(B * T, C, H, W)
             x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
+            _, C, H, W = x.shape # Update H, W after resize
+            x = x.reshape(B, T, C, H, W)
         
-        # Process all frames at once with patch embedding
-        x = self.patch_embed(x)  # (T, n_patches+1, embed_dim)
+        # Reshape for patch embedding: (B, T, C, H, W) -> (B*T, C, H, W)
+        x = x.reshape(B * T, C, H, W)
+        x = self.patch_embed(x)  # Output shape: (B*T, n_patches+1, embed_dim)
+        _, N, D = x.shape # N = n_patches + 1 (incl. cls token), D = embed_dim
+
+        # Reshape back for spatial processing: (B*T, N, D) -> (B, T*N, D) ? 
+        # Let's keep spatial processing frame-wise for now: (B*T, N, D)
+        # Alternatively, could process T*N sequence per batch item: (B, T*N, D)
+        # Sticking to (B*T, N, D) is simpler for spatial blocks.
         
-        # Process spatial transformer blocks in batch
+        # Process spatial transformer blocks
         for i, block in enumerate(self.spatial_blocks):
-            x_norm = self.spatial_norms[i](x)
-            x = x + block(x_norm)
+            x_norm = self.spatial_norms[i](x) # Input: (B*T, N, D)
+            x = x + block(x_norm) # Output: (B*T, N, D)
         
-        # Prepare for temporal processing: flatten tokens per frame
-        T, N, D = x.shape
-        x = x.reshape(1, T * N, D)  # (1, T*N, embed_dim)
+        # Reshape for temporal processing: (B*T, N, D) -> (B, T, N, D) -> (B, T*N, D)
+        x = x.reshape(B, T, N, D)
+        x = x.reshape(B, T * N, D)  # Shape: (B, T*N, D)
         
         # Create and apply temporal position embeddings
-        temp_pos = self.temporal_pos_embed[:, :T, :]  # (1, T, embed_dim)
-        temp_pos = temp_pos.unsqueeze(2).expand(1, T, N, D).reshape(1, T * N, D)
+        # Shape: (1, T, D) -> expand T dim -> (1, T, N, D) -> (1, T*N, D)
+        temp_pos = self.temporal_pos_embed[:, :T, :]  # (1, T, D)
+        # Expand N dim (tokens per frame) and reshape to match x
+        temp_pos = temp_pos.unsqueeze(2).expand(1, T, N, D).reshape(1, T * N, D) 
+        # Add to x (broadcasts over batch dim B)
         x = x + temp_pos
         
         # Process with temporal transformer blocks
         for i, block in enumerate(self.temporal_blocks):
-            x_norm = self.temporal_norms[i](x)
-            x = x + block(x_norm)
+            x_norm = self.temporal_norms[i](x) # Input: (B, T*N, D)
+            x = x + block(x_norm) # Output: (B, T*N, D)
         
-        # Aggregate token features (e.g., mean pooling)
-        x = x.mean(dim=1)  # (1, embed_dim)
-        x = x.squeeze(0)
+        # Aggregate token features over the T*N dimension (e.g., mean pooling)
+        x = x.mean(dim=1)  # Output shape: (B, D)
         
-        return x
+        # Remove class token if not needed for downstream task?
+        # Current implementation pools all tokens (T*N), including cls tokens from each frame.
+        # If only the cls token of the *last* frame is desired, need different pooling.
+        # For now, mean pooling across all tokens is assumed.
+
+        return x # Shape: (B, embed_dim)
     
     def act(self, obs):
         """

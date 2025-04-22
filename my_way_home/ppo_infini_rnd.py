@@ -62,7 +62,7 @@ class PPOAgent(nn.Module):
         # Forward through policy and value networks
         logits = self.policy(feat)
         value = self.value(feat)
-        return logits, value.squeeze(-1), feat
+        return logits, value, feat
 
     def get_action(self, obs):
         # Ensure we're in evaluation mode for inference
@@ -392,7 +392,7 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
                 policy_loss = -torch.min(ratio * adv_batch, clip_adv).mean()
                 
                 # Value loss
-                value_loss = F.mse_loss(values, ret_batch)
+                value_loss = F.mse_loss(values, ret_batch.squeeze(-1))
                 
                 # Entropy bonus
                 entropy_loss = dist.entropy().mean()
