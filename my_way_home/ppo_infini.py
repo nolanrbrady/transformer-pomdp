@@ -18,16 +18,24 @@ from models.infini_vit import InfiniViT
 
 # === PPO Agent ===
 class PPOAgent(nn.Module):
-    def __init__(self, vit_encoder, action_dim, hidden_dim=256):
+    def __init__(self, vit_encoder, action_dim, hidden_dim=1024):
         super().__init__()
         self.vit = vit_encoder
         self.policy = nn.Sequential(
-            nn.Linear(512, hidden_dim),
+            nn.Linear(1024, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_dim)
         )
         self.value = nn.Sequential(
-            nn.Linear(512, hidden_dim),
+            nn.Linear(1024, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
@@ -123,8 +131,8 @@ class ViTFeatureWrapper(nn.Module):
             dropout=0.1,
             pad_if_needed=True,
             device=self.device,
-            num_spatial_blocks=3,
-            num_temporal_blocks=3,
+            num_spatial_blocks=2,
+            num_temporal_blocks=2,
             update_interval=5,
         ).to(self.device)
         
