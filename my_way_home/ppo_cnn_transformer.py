@@ -11,42 +11,73 @@ import gymnasium as gym
 import torchvision.transforms.functional as TF
 from collections import deque
 from vizdoom import gymnasium_wrapper
+from transformers import BertModel, BertConfig
 
 # === PPO Agent ===
 class PPOAgent(nn.Module):
-    def __init__(self, cnn_encoder, action_dim, hidden_dim=1024):
+    def __init__(self, cnn_encoder, action_dim, hidden_dim=512, context_length=32):
         super().__init__()
         self.cnn = cnn_encoder
+        self.feature_buffer = FeatureBuffer(context_length, cnn_encoder.out_dim, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         self.hidden_dim = hidden_dim
-        self.flattened_dim = cnn_encoder.flattened_dim
-        print("Flattened Dimension in PPO Agent: ", self.flattened_dim)
-        self.policy = nn.Sequential(
-            nn.Linear(self.flattened_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim)
+        self.flattened_dim = cnn_encoder.out_dim
+        self.context_length = context_length
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Initialize BERT model
+        self.bert_config = BertConfig(
+            vocab_size=10000,  # Adjust this value based on your vocabulary size
+            hidden_size=hidden_dim,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            intermediate_size=self.flattened_dim * 4,
+            hidden_act="gelu",
+            hidden_dropout_prob=0.1,
+            attention_probs_dropout_prob=0.1,
+            max_position_embeddings=512,
         )
-        self.value = nn.Sequential(
-            nn.Linear(self.flattened_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
+        self.bert = BertModel(self.bert_config)
+
+        self.policy = nn.Linear(self.flattened_dim, action_dim)
+        self.value = nn.Linear(self.flattened_dim, 1)
 
     def forward(self, obs):
-        # Get features from CNN encoder
-        feat = self.cnn(obs)
-        feat = feat.view(feat.size(0), -1)
-        # Forward through policy and value networks
-        logits = self.policy(feat)
-        value = self.value(feat)
-        return logits, value.squeeze(-1), feat
+        # Support both single and batched obs
+        if obs.dim() == 4:
+            # Batched input: [batch, C, H, W]
+            batch_size = obs.shape[0]
+            feats = self.cnn(obs)  # [batch, out_dim]
+            outputs = []
+            for i in range(batch_size):
+                feat = feats[i].view(-1)
+                self.feature_buffer.append(feat)
+                feature_seq = self.feature_buffer.get_sequence()
+                feature_seq = torch.stack(feature_seq, dim=0).unsqueeze(0).to(self.device)
+                bert_output = self.bert(inputs_embeds=feature_seq)
+                bert_hidden_state = bert_output.last_hidden_state
+                cls_token = bert_hidden_state[:, 0, :]
+                
+                logits = self.policy(cls_token)
+                value = self.value(cls_token)
+                outputs.append((logits, value.squeeze(-1), feat))
+            # Stack outputs
+            logits = torch.cat([o[0] for o in outputs], dim=0)
+            values = torch.cat([o[1] for o in outputs], dim=0)
+            feats = torch.stack([o[2] for o in outputs], dim=0)
+            return logits, values, feats
+        else:
+            # Single input
+            feat = self.cnn(obs)
+            feat = feat.view(-1)
+            self.feature_buffer.append(feat)
+            feature_seq = self.feature_buffer.get_sequence()
+            feature_seq = torch.stack(feature_seq, dim=0).unsqueeze(0).to(self.device)
+            bert_output = self.bert(inputs_embeds=feature_seq)
+            bert_hidden_state = bert_output.last_hidden_state
+            cls_token = bert_hidden_state[:, 0, :]
+            logits = self.policy(cls_token)
+            value = self.value(cls_token)
+            return logits, value.squeeze(-1), feat
 
     def get_action(self, obs):
         # Ensure we're in evaluation mode for inference
@@ -69,7 +100,17 @@ class RolloutBuffer:
         # Ensure obs is a tensor, not a dictionary
         if isinstance(obs, dict) and 'screen' in obs:
             obs = torch.tensor(obs['screen'], dtype=torch.float32).permute(2, 0, 1)
-        
+        # Detach tensors to avoid backprop through the same graph
+        if isinstance(obs, torch.Tensor):
+            obs = obs.detach()
+        if isinstance(action, torch.Tensor):
+            action = action.detach()
+        if isinstance(log_prob, torch.Tensor):
+            log_prob = log_prob.detach()
+        if isinstance(value, torch.Tensor):
+            value = value.detach()
+        if isinstance(feature, torch.Tensor):
+            feature = feature.detach()
         self.obs.append(obs)
         self.actions.append(action)
         self.rewards.append(reward)
@@ -109,13 +150,47 @@ class RolloutBuffer:
     def clear(self):
         self.__init__()
 
+class FeatureBuffer:
+    # Buffer to store the CNN features for the transformer context window
+    def __init__(self, context_length, feature_dim, device):
+        self.context_length = context_length
+        self.feature_dim = feature_dim
+        self.device = device
+        self.buffer = deque(maxlen=context_length)
+
+    def append(self, feature):
+        # Ensure feature is 1D and correct shape
+        if not isinstance(feature, torch.Tensor):
+            feature = torch.tensor(feature, dtype=torch.float32, device=self.device)
+        feature = feature.view(-1)
+        if feature.shape[0] != self.feature_dim:
+            raise ValueError(f"FeatureBuffer: feature has shape {feature.shape}, expected ({self.feature_dim},)")
+        self.buffer.append(feature)
+
+    def get_sequence(self):
+        # Build sequence with padding and detach older features
+        seq = list(self.buffer)
+        # Detach all but the most recent feature to avoid reusing old graphs
+        for i in range(len(seq) - 1):
+            seq[i] = seq[i].detach()
+        # Pad with zeros if needed
+        if len(seq) < self.context_length:
+            pad_size = self.context_length - len(seq)
+            pad = [torch.zeros(self.feature_dim, device=self.device)] * pad_size
+            seq = pad + seq
+        return seq
+    
+    def clear(self):
+        self.buffer.clear()
+
 # === ViT Feature Extractor Wrapper ===
 class CNNFeatureWrapper(nn.Module):
-    def __init__(self):
+    def __init__(self, out_dim=512):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.flattened_dim = 0
-        
+        self.buffer = []
+        self.out_dim = out_dim
         # InfiniViT configuration
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=8, stride=4),
@@ -127,18 +202,15 @@ class CNNFeatureWrapper(nn.Module):
             nn.Conv2d(64, 128, kernel_size=3, stride=1),
             nn.ReLU(),
         )
-
         with torch.no_grad():
             test_input = torch.randn(1, 3, 240, 320).to(self.device)
             test_output = self.cnn(test_input)
             self.flattened_dim = test_output.view(1, -1).shape[1]
-
-        
+        self.projection = nn.Linear(self.flattened_dim, out_dim)
     def forward(self, obs):
         # Handle both dictionary observations and direct arrays
         if isinstance(obs, dict):
             obs = obs['screen']
-        
         if isinstance(obs, np.ndarray):
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
             # Convert from HWC to CHW if needed
@@ -148,11 +220,11 @@ class CNNFeatureWrapper(nn.Module):
             obs_tensor = obs.to(self.device)
             if obs_tensor.shape[-1] == 3 and obs_tensor.dim() == 3:
                 obs_tensor = obs_tensor.permute(2, 0, 1)
-
         # Normalize
         obs_tensor = obs_tensor / 255.0
         logits = self.cnn(obs_tensor)
         logits = logits.view(logits.size(0), -1)
+        logits = self.projection(logits) # Downsamples to out_dim for memory efficiency
         return logits
 
 # Function to save model checkpoints
@@ -250,7 +322,7 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
                 local_episodes_completed += 1
                 episode_reward = 0
                 episode_length = 0
-                # cnn_encoder.reset_buffer()
+                agent.feature_buffer.clear()
 
         # Update totals
         total_episodes += local_episodes_completed
@@ -285,6 +357,7 @@ def train(env_id="VizdoomMyWayHome-v0", total_timesteps=500_000, rollout_len=409
         print(f"| rollout/                |       |")
         print(f"|    ep_len_mean          | {mean_length:<5.1f} |")
         print(f"|    ep_rew_mean          | {mean_reward:<5.3f} |")
+        print(f"|    best_mean_reward     | {best_mean_reward:<5.3f} |")
         print(f"|-------------------------|-------|")
         print(f"| time/                   |       |")
         print(f"|    fps                  | {fps:<5.1f} |")
