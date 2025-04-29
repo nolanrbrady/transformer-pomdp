@@ -26,22 +26,24 @@ class PPOAgent(nn.Module):
 
         # Initialize BERT model
         self.bert_config = BertConfig(
-            vocab_size=10000,  # Adjust this value based on your vocabulary size
+            vocab_size=10000,  # 10000 is the default vocabulary size for BERT
             hidden_size=hidden_dim,
-            num_hidden_layers=2,
-            num_attention_heads=2,
+            num_hidden_layers=4,
+            num_attention_heads=4,
             intermediate_size=self.flattened_dim * 4,
             hidden_act="gelu",
             hidden_dropout_prob=0.1,
             attention_probs_dropout_prob=0.1,
             max_position_embeddings=512,
         )
-        self.bert = BertModel(self.bert_config)
+        self.bert = BertModel(self.bert_config).to(self.device)
 
-        self.policy = nn.Linear(self.flattened_dim, action_dim)
-        self.value = nn.Linear(self.flattened_dim, 1)
+        self.policy = nn.Linear(self.flattened_dim, action_dim).to(self.device)
+        self.value = nn.Linear(self.flattened_dim, 1).to(self.device)
 
     def forward(self, obs):
+        # Ensure obs is on the correct device
+        obs = obs.to(self.device) if isinstance(obs, torch.Tensor) else obs
         # Support both single and batched obs
         if obs.dim() == 4:
             # Batched input: [batch, C, H, W]
@@ -99,18 +101,18 @@ class RolloutBuffer:
     def store(self, obs, action, reward, done, log_prob, value, feature):
         # Ensure obs is a tensor, not a dictionary
         if isinstance(obs, dict) and 'screen' in obs:
-            obs = torch.tensor(obs['screen'], dtype=torch.float32).permute(2, 0, 1)
+            obs = torch.tensor(obs['screen'], dtype=torch.float32, device=self.obs[0].device if self.obs else torch.device("cuda" if torch.cuda.is_available() else "cpu")).permute(2, 0, 1)
         # Detach tensors to avoid backprop through the same graph
         if isinstance(obs, torch.Tensor):
-            obs = obs.detach()
+            obs = obs.detach().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         if isinstance(action, torch.Tensor):
-            action = action.detach()
+            action = action.detach().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         if isinstance(log_prob, torch.Tensor):
-            log_prob = log_prob.detach()
+            log_prob = log_prob.detach().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         if isinstance(value, torch.Tensor):
-            value = value.detach()
+            value = value.detach().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         if isinstance(feature, torch.Tensor):
-            feature = feature.detach()
+            feature = feature.detach().to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         self.obs.append(obs)
         self.actions.append(action)
         self.rewards.append(reward)
@@ -136,15 +138,16 @@ class RolloutBuffer:
         n = len(self.obs)
         indices = np.arange(n)
         np.random.shuffle(indices)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         for start in range(0, n, batch_size):
             end = start + batch_size
             yield [
-                torch.stack([self.obs[i] for i in indices[start:end]]),
-                torch.tensor([self.actions[i] for i in indices[start:end]]),
-                torch.tensor([self.log_probs[i] for i in indices[start:end]]),
-                torch.tensor([self.advantages[i] for i in indices[start:end]]),
-                torch.tensor([self.returns[i] for i in indices[start:end]]),
-                torch.stack([self.features[i] for i in indices[start:end]])
+                torch.stack([self.obs[i] for i in indices[start:end]]).to(device),
+                torch.tensor([self.actions[i] for i in indices[start:end]]).to(device),
+                torch.tensor([self.log_probs[i] for i in indices[start:end]]).to(device),
+                torch.tensor([self.advantages[i] for i in indices[start:end]]).to(device),
+                torch.tensor([self.returns[i] for i in indices[start:end]]).to(device),
+                torch.stack([self.features[i] for i in indices[start:end]]).to(device)
             ]
 
     def clear(self):
@@ -162,7 +165,7 @@ class FeatureBuffer:
         # Ensure feature is 1D and correct shape
         if not isinstance(feature, torch.Tensor):
             feature = torch.tensor(feature, dtype=torch.float32, device=self.device)
-        feature = feature.view(-1)
+        feature = feature.view(-1).to(self.device)
         if feature.shape[0] != self.feature_dim:
             raise ValueError(f"FeatureBuffer: feature has shape {feature.shape}, expected ({self.feature_dim},)")
         self.buffer.append(feature)
@@ -172,7 +175,7 @@ class FeatureBuffer:
         seq = list(self.buffer)
         # Detach all but the most recent feature to avoid reusing old graphs
         for i in range(len(seq) - 1):
-            seq[i] = seq[i].detach()
+            seq[i] = seq[i].detach().to(self.device)
         # Pad with zeros if needed
         if len(seq) < self.context_length:
             pad_size = self.context_length - len(seq)
@@ -201,12 +204,12 @@ class CNNFeatureWrapper(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Conv2d(64, 128, kernel_size=3, stride=1),
             nn.ReLU(),
-        )
+        ).to(self.device)
         with torch.no_grad():
-            test_input = torch.randn(1, 3, 240, 320).to(self.device)
+            test_input = torch.randn(1, 3, 240, 320, device=self.device)
             test_output = self.cnn(test_input)
             self.flattened_dim = test_output.view(1, -1).shape[1]
-        self.projection = nn.Linear(self.flattened_dim, out_dim)
+        self.projection = nn.Linear(self.flattened_dim, out_dim).to(self.device)
     def forward(self, obs):
         # Handle both dictionary observations and direct arrays
         if isinstance(obs, dict):
@@ -459,9 +462,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO InfiniViT")
     parser.add_argument("--env_id", type=str, default="VizdoomMyWayHome-v0")
     parser.add_argument("--total_timesteps", type=int, default=500_000)
-    parser.add_argument("--rollout_len", type=int, default=4096)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--K_epochs", type=int, default=4)
+    parser.add_argument("--rollout_len", type=int, default=8192)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--K_epochs", type=int, default=6)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.95)
     parser.add_argument("--clip_range", type=float, default=0.2)
