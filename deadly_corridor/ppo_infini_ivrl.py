@@ -510,13 +510,22 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
     latent_bank = LatentNeedBank(input_dim=512).to(device)
     print("Models initialized on device")
 
+    # --- Learnable Beta for intrinsic vs extrinsic mixing ---
+    # Initialize at 1.0 (pure intrinsic) and optimize via gradient descent
+    beta_param = torch.nn.Parameter(torch.tensor(1.0, dtype=torch.float32, device=device), requires_grad=True)
+
     # --- Initialize Optimizers ---
     # Combine params carefully
-    optimizer = torch.optim.Adam(itertools.chain(agent.policy.parameters(),
-                                                  agent.value_ext.parameters(),
-                                                  agent.value_int.parameters(),
-                                                  agent.vit.parameters()), # Include ViT params
-                               lr=lr)
+    optimizer = torch.optim.Adam(
+        itertools.chain(
+            agent.policy.parameters(),
+            agent.value_ext.parameters(),
+            agent.value_int.parameters(),
+            agent.vit.parameters(),  # Include ViT params
+            [beta_param]            # Learnable mixing parameter
+        ),
+        lr=lr
+    )
     rnd_optimizer = torch.optim.Adam(rnd_model.predictor.parameters(), lr=rnd_lr)
     need_optimizer = torch.optim.Adam(itertools.chain(need_module.parameters(),
                                                    latent_bank.parameters()),
@@ -642,15 +651,14 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
         need_module.train()
         latent_bank.train()
 
-        # Calculate Beta for advantage mixing
-        beta = beta_schedule(current_timestep, total_timesteps, warmup_beta, final_beta_value)
-
         # Logging setup
         policy_losses, value_ext_losses, value_int_losses, entropy_losses = [], [], [], []
         approx_kls, clip_fractions, rnd_losses, need_losses = [], [], [], [] # Add need_loss tracking
 
         for epoch in range(K_epochs):
             for acts_b, logps_b, feats_b, adv_ext_b, adv_int_b, ret_ext_b, ret_int_b in buffer.get_batches(batch_size, device):
+                # Compute learned Beta for advantage mixing per batch
+                beta = torch.sigmoid(beta_param)
 
                 # --- PPO Agent Update --- 
                 logits, v_ext, v_int = agent(feats_b) # Use precomputed features
@@ -697,8 +705,9 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
 
                 # --- Need Module Update --- 
                 # Recompute need values on the batch features for training
-                need_vals_batch = latent_bank(feats_b.detach(), acts_b) # Detach features
-                need_vals_batch["novelty"] = rnd_model(feats_b.detach()) # Use detached RND novelty
+                need_vals_batch = latent_bank(feats_b.detach(), acts_b)  # Detach features
+                # Get novelty from RND and detach to avoid second backward through RND graph
+                need_vals_batch["novelty"] = rnd_model(feats_b.detach()).detach()
                 # Calculate intrinsic reward again, but keep gradients for need modules
                 intrinsic_reward_pred, _ = need_module(feats_b.detach(), need_vals_batch)
                 # Use intrinsic returns as target for need module prediction (simple approach)
@@ -736,10 +745,10 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
         current_need_lr = need_optimizer.param_groups[0]['lr']
 
         # Calculate explained variance (optional, uses buffer data)
-        # y_pred_ext = np.array([v.cpu().numpy() for v in buffer.v_ext])
-        # y_true_ext = np.array([r.cpu().numpy() for r in buffer.ret_ext])
-        # y_var_ext = np.var(y_true_ext)
-        # explained_var_ext = np.nan if y_var_ext == 0 else 1 - np.var(y_true_ext - y_pred_ext) / y_var_ext
+        y_pred_ext = np.array([v.cpu().numpy() for v in buffer.v_ext])
+        y_true_ext = np.array([r.cpu().numpy() for r in buffer.ret_ext])
+        y_var_ext = np.var(y_true_ext)
+        explained_var_ext = np.nan if y_var_ext == 0 else 1 - np.var(y_true_ext - y_pred_ext) / y_var_ext
 
         print(f"---------------------------------")
         print(f"| Timestep                | {current_timestep:<5} |")
@@ -764,8 +773,8 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
         print(f"|    entropy_loss         | {np.mean(entropy_losses):<5.3f} |")
         print(f"|    rnd_loss             | {np.mean(rnd_losses):<5.3f} |")
         print(f"|    need_loss            | {np.mean(need_losses):<5.3f} |")
-        # print(f"|    explained_variance   | {explained_var_ext:<5.3f} |")
-        print(f"|    beta                 | {beta:<5.3f} |")
+        print(f"|    explained_variance   | {explained_var_ext:<5.3f} |")
+        print(f"|    beta (learned)       | {beta.item():<5.3f} |")
         print(f"|    learning_rate        | {current_lr:<5.5f} |")
         print(f"|    rnd_learning_rate    | {current_rnd_lr:<5.5f} |")
         print(f"|    need_learning_rate   | {current_need_lr:<5.5f} |")
@@ -809,7 +818,7 @@ def train(env_id: str = "VizdoomCorridor-v0", # Adjusted default env_id
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO InfiniViT+IVRL for Deadly Corridor")
     parser.add_argument("--env_id", type=str, default="VizdoomCorridor-v0", help="Environment ID")
-    parser.add_argument("--total_timesteps", type=int, default=500_000, help="Total timesteps for training")
+    parser.add_argument("--total_timesteps", type=int, default=2_000_000, help="Total timesteps for training")
     parser.add_argument("--rollout_len", type=int, default=4096, help="Steps per rollout")
     parser.add_argument("--batch_size", type=int, default=64, help="Minibatch size")
     parser.add_argument("--K_epochs", type=int, default=4, help="Number of training epochs per rollout")

@@ -393,6 +393,8 @@ def train(env_id: str = "VizdoomMyWayHome-v0",
     latent_bank = LatentNeedBank(input_dim=512).to(device)
     need_module = NeedRewardModule(input_dim=512).to(device)
     running_norm = RunningMeanStd()
+    # --- Learnable Beta for intrinsic vs extrinsic mixing ---
+    beta_param = nn.Parameter(torch.tensor(1.0, dtype=torch.float32, device=device), requires_grad=True)
 
     # --- Optimizer Setup ---
     params_to_optimize = itertools.chain(agent.parameters(), need_module.parameters(), latent_bank.parameters())
@@ -496,6 +498,8 @@ def train(env_id: str = "VizdoomMyWayHome-v0",
 
             # --- PPO Update Phase ---
             agent.train(); rnd_model.train(); latent_bank.train(); need_module.train()
+            # Use learned beta via sigmoid for advantage mixing
+            # beta = torch.sigmoid(beta_param)
             beta = beta_schedule(current_global_step, total_timesteps, warmup_beta, final_beta_value)
 
             # Store last losses for basic console logging
@@ -504,22 +508,41 @@ def train(env_id: str = "VizdoomMyWayHome-v0",
             for epoch in range(K_epochs):
                 for (obs_b, act_b, logp_b, adv_ext_b, adv_int_b,
                      ret_ext_b, ret_int_b, feat_b) in buffer.get_batches(batch_size, device):
+                    # Forward pass
                     logits, v_ext_pred, v_int_pred, _ = agent.forward(obs=None, features=feat_b)
                     dist = torch.distributions.Categorical(logits=logits)
-                    combined_adv = adv_ext_b + beta * adv_int_b
+                    # Mix and normalize advantages
+                    combined_adv = (1 - beta) * adv_ext_b + beta * adv_int_b
                     combined_adv = (combined_adv - combined_adv.mean()) / (combined_adv.std() + 1e-8)
-                    new_logp = dist.log_prob(act_b); ratio = torch.exp(new_logp - logp_b)
-                    policy_loss_1 = -combined_adv * ratio; policy_loss_2 = -combined_adv * torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
-                    policy_loss = torch.max(policy_loss_1, policy_loss_2).mean()
-                    value_loss_ext = F.mse_loss(v_ext_pred, ret_ext_b); value_loss_int = F.mse_loss(v_int_pred, ret_int_b)
-                    value_loss = value_loss_ext + value_loss_int; entropy_loss = -dist.entropy().mean()
-                    loss = policy_loss + vf_coef * value_loss + ent_coef * entropy_loss
-                    optimizer.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], max_grad_norm); optimizer.step()
+                    # Policy loss (clipped PPO)
+                    new_logp = dist.log_prob(act_b)
+                    ratio = torch.exp(new_logp - logp_b)
+                    clip_adv = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * combined_adv
+                    policy_loss = -torch.min(ratio * combined_adv, clip_adv).mean()
+                    # Value loss and entropy loss
+                    v_loss_ext = F.mse_loss(v_ext_pred, ret_ext_b)
+                    v_loss_int = F.mse_loss(v_int_pred, ret_int_b)
+                    value_loss = v_loss_ext + v_loss_int
+                    entropy_loss = -dist.entropy().mean()
+                    # RND novelty loss
                     rnd_loss = rnd_model(feat_b.detach()).mean()
-                    rnd_optimizer.zero_grad(); rnd_loss.backward(); torch.nn.utils.clip_grad_norm_(rnd_model.predictor.parameters(), max_grad_norm); rnd_optimizer.step()
-                    # Store last batch losses
-                    last_policy_loss = policy_loss.item(); last_value_loss = value_loss.item(); last_entropy_loss = entropy_loss.item(); last_rnd_loss = rnd_loss.item()
 
+                    # Combined backward: policy + value + entropy + rnd losses
+                    optimizer.zero_grad()
+                    rnd_optimizer.zero_grad()
+                    total_loss = policy_loss + vf_coef * value_loss + ent_coef * entropy_loss + rnd_loss
+                    total_loss.backward(retain_graph=True)
+                    # Gradient clipping for agent and RND predictor
+                    torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(rnd_model.predictor.parameters(), max_grad_norm)
+                    optimizer.step()
+                    rnd_optimizer.step()
+
+                    # Store last batch losses for logging
+                    last_policy_loss = policy_loss.item()
+                    last_value_loss = value_loss.item()
+                    last_entropy_loss = entropy_loss.item()
+                    last_rnd_loss = rnd_loss.item()
 
             # --- Logging and Saving ---
             end_time = time.time(); fps = int(buffer._size / (end_time - start_time))
@@ -534,7 +557,7 @@ def train(env_id: str = "VizdoomMyWayHome-v0",
             print(f"|    ep_len_mean          | {mean_ep_len:<5.1f} |")
             print(f"|    ep_rew_mean          | {mean_ext_rew:<5.4f} |") # Updated format
             print(f"|    ep_int_rew_mean      | {mean_int_rew_rollout:<5.3f} |") # Added intrinsic reward
-            print(f"|    exploration_beta     | {beta:<5.3f} |")
+            print(f"|    exploration_beta (learned) | {beta:<5.3f} |")
             print(f"|-------------------------|-------|")
             print(f"| time/                   |       |")
             print(f"|    fps                  | {fps:<5} |")
@@ -592,7 +615,7 @@ if __name__ == "__main__":
     parser.add_argument("--vit_frame_history", type=int, default=32)
     parser.add_argument("--warmup_beta", type=int, default=20000)
     parser.add_argument("--final_beta_value", type=float, default=0.05)
-    parser.add_argument("--freeze_vit_steps", type=int, default=100000)
+    parser.add_argument("--freeze_vit_steps", type=int, default=20_000)
     parser.add_argument("--load_checkpoint", type=str, default=None)
     parser.add_argument("--save_freq", type=int, default=50000)
     args = parser.parse_args()
