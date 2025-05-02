@@ -15,7 +15,7 @@ from transformers import BertModel, BertConfig
 
 # === PPO Agent ===
 class PPOAgent(nn.Module):
-    def __init__(self, cnn_encoder, action_dim, hidden_dim=512, context_length=32):
+    def __init__(self, cnn_encoder, action_dim, hidden_dim=512, context_length=64):
         super().__init__()
         self.cnn = cnn_encoder
         self.feature_buffer = FeatureBuffer(context_length, cnn_encoder.out_dim, torch.device("cuda" if torch.cuda.is_available() else "cpu"))

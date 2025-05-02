@@ -22,7 +22,7 @@ class PPOAgent(nn.Module):
         super().__init__()
         self.vit = vit_encoder
         self.policy = nn.Sequential(
-            nn.Linear(1024, hidden_dim),
+            nn.Linear(512, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -31,7 +31,7 @@ class PPOAgent(nn.Module):
             nn.Linear(hidden_dim, action_dim)
         )
         self.value = nn.Sequential(
-            nn.Linear(1024, hidden_dim),
+            nn.Linear(512, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -416,7 +416,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PPO InfiniViT")
     parser.add_argument("--env_id", type=str, default="VizdoomMyWayHome-v0")
     parser.add_argument("--total_timesteps", type=int, default=500_000)
-    parser.add_argument("--rollout_len", type=int, default=4096)
+    parser.add_argument("--rollout_len", type=int, default=8192)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--K_epochs", type=int, default=4)
     parser.add_argument("--gamma", type=float, default=0.99)
