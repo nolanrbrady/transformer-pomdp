@@ -593,6 +593,22 @@ def train(env_id: str = "VizdoomMyWayHome-v0",
         agent.to('cpu'); vit_encoder.to('cpu'); rnd_model.to('cpu'); need_module.to('cpu'); latent_bank.to('cpu')
         save_checkpoint(final_model_path, agent, vit_encoder, rnd_model, need_module, latent_bank, optimizer, rnd_optimizer, current_global_step if 'current_global_step' in locals() else start_timestep, episode_rewards_history, running_norm)
         print("Training finished.")
+        # Final training statistics
+        print("\nTraining completed!")
+        if total_episodes > 0:
+            print(f"\n{'='*30} Final Statistics {'='*30}")
+            print(f"Total episodes: {total_episodes}")
+            avg_ext_rew = np.mean(episode_ext_rews_deque) if episode_ext_rews_deque else float('nan')
+            avg_ep_len = np.mean(episode_lengths_deque) if episode_lengths_deque else float('nan')
+            print(f"Average episode reward: {avg_ext_rew:.3f}")
+            print(f"Average episode length: {avg_ep_len:.1f}")
+            print(f"Best mean reward: {best_mean_ext_reward:.3f}")
+            print(f"Total timesteps: {current_global_step}")
+            total_time = time.time() - script_start_time
+            print(f"Total training time: {total_time:.1f}s")
+            print(f"Best model saved to: {best_model_path}")
+        else:
+            print("No episodes completed during training.")
 
 if __name__ == "__main__":
     import argparse

@@ -5,7 +5,7 @@
 #SBATCH --mail-user=nobr3541@colorado.edu     # Where to send mail
 #SBATCH --nodes=1                            # Run all processes on a single node
 #SBATCH --ntasks=1                           # Run a single task
-#SBATCH --time=3-00:00:00                 # Time limit hrs:min:sec
+#SBATCH --time=7-00:00:00                 # Time limit hrs:min:sec
 #SBATCH --output=run_policy_cnn_mamba_my_way_home.log           # Standard output and error log
 #SBATCH --gres=gpu:1                      # request 1 gpu
 
